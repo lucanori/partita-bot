@@ -1,37 +1,126 @@
 name: Build and publish a Docker image to ghcr.io
 
 on:
-  # publish on releases, e.g. v2.1.13 (image tagged as "2.1.13" - "v" prefix is removed)
   release:
-    types: [ published ]
+    types: [published]
 
-  # publish on pushes to the main branch (image tagged as "latest")
-  push:
-    branches:
-      - main
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   docker_publish:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
+      attestations: write
+      id-token: write
 
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      # Build and publish Docker image
-      - name: Build and publish a Docker image for ${{ github.repository }}
-        uses: macbre/push-to-ghcr@master
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          image_name: ${{ github.repository }}  # it will be lowercased internally
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Optional: Update Docker Hub as well
-      # - name: Build and publish to Docker Hub
-      #   uses: macbre/push-to-ghcr@master
-      #   with:
-      #     image_name: ${{ github.repository }}
-      #     github_token: ${{ secrets.GITHUB_TOKEN }}
-      #     docker_io_token: ${{ secrets.DOCKER_IO_ACCESS_TOKEN }}
-      #     repository: docker.io
+      - name: Check if attestations are supported
+        id: attestation_check
+        run: |
+          if [[ "${{ github.event.repository.visibility }}" == "public" ]] || [[ "${{ github.repository_owner }}" == "enterprise-cloud-org" ]]; then
+            echo "supported=true" >> $GITHUB_OUTPUT
+          else
+            echo "supported=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=alpha,enable=${{ github.event.release.prerelease == true && contains(github.event.release.tag_name, 'alpha') }}
+            type=raw,value=beta,enable=${{ github.event.release.prerelease == true && contains(github.event.release.tag_name, 'beta') }}
+            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=EnvAI Frontend
+            org.opencontainers.image.description=EnvAI frontend application
+            org.opencontainers.image.vendor=One Ring AI
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+            type=gha
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+            type=gha,mode=max
+          provenance: ${{ steps.attestation_check.outputs.supported }}
+          sbom: ${{ steps.attestation_check.outputs.supported }}
+
+      - name: Generate build attestation
+        if: steps.attestation_check.outputs.supported == 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Send Telegram notification
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          REPO="${{ github.repository }}"
+          TAG="${{ github.event.release.tag_name }}"
+          SHA="${{ github.sha }}"
+
+          if [[ "$STATUS" == "success" ]]; then
+            EMOJI="✅"
+            MESSAGE="Docker image build completed successfully"
+          else
+            EMOJI="❌"
+            MESSAGE="Docker image build failed"
+          fi
+
+          if [[ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" || -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]]; then
+            echo "⚠️ Telegram notification skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secrets not set"
+            echo "To enable Telegram notifications, set the following secrets in your repository:"
+            echo "- TELEGRAM_BOT_TOKEN: Your Telegram bot token"
+            echo "- TELEGRAM_CHAT_ID: Your Telegram chat ID"
+            echo "- TELEGRAM_THREAD_ID: (Optional) Your Telegram thread ID for topic-based chats"
+          else
+            echo "📤 Sending Telegram notification..."
+            
+            JSON_PAYLOAD="{\"chat_id\": \"${{ secrets.TELEGRAM_CHAT_ID }}\", \"text\": \"${EMOJI} ${MESSAGE}\n\nRepository: ${REPO}\nTag: ${TAG}\nCommit: ${SHA}\nStatus: ${STATUS}\""
+            
+            if [[ -n "${{ secrets.TELEGRAM_THREAD_ID }}" ]]; then
+              JSON_PAYLOAD="${JSON_PAYLOAD}, \"message_thread_id\": ${{ secrets.TELEGRAM_THREAD_ID }}"
+              echo "Using thread ID: ${{ secrets.TELEGRAM_THREAD_ID }}"
+            fi
+            
+            JSON_PAYLOAD="${JSON_PAYLOAD}}"
+            
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -d "${JSON_PAYLOAD}" \
+              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"
+            echo "✅ Telegram notification sent successfully"
+          fi
