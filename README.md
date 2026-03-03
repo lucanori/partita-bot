@@ -132,10 +132,6 @@ For local testing with your latest changes without pushing to GitHub, use `docke
    docker compose -f docker-compose.local.yml logs -f
    ```
 
-## Contributing
-
-Contributions are welcome. Please refer to `DEVELOPER_GUIDE.md` for guidelines on code style, testing, and Git workflow.
-
 ## License
 
 This project is licensed under the terms found in the [LICENSE](LICENSE) file.
