@@ -1,11 +1,10 @@
 # Partita Bot
 
-Partita Bot is a Telegram bot that notifies users about daily football matches. Born because i was tired of finding myself in traffic jams in my city, and shared for every frustrated user with my same problem.
-To use the bot, the end user can configure their city with a simple telegram chat. The bot fetches match data daily via an integrated scheduler and sends notifications within the configured time window if a match is scheduled. An admin panel provides web-based controls for managing users and the bot access mode (blocklist/whitelist).
+Partita Bot is a Telegram bot that keeps Italians informed about the next football match or major sporting event happening in their city by consulting Exa Answer each morning and delivering curated notifications inside the configured time window. Users choose their city via Telegram, the scheduler asks Exa about the day ahead, and notifications are queued, rate limited, and delivered reliably by the bot. The Flask admin panel provides controls for managing access, manual triggers, and user state.
 
 ## Features
 
-- **Daily Notifications:** The bot checks for football matches in a user's configured city and sends a notification every morning during the configured notification window if a match is scheduled.
+- **Daily Event Signals:** Each morning the scheduler builds a localized query ("oggi DD/MM/YYYY ci sarà una partita di calcio o un evento in città X?") and asks the Exa Answer endpoint for structured event details (orari, location, tipo). Only one query per city per day is performed thanks to the DB-backed cache.
 - **Message Queue System:** Reliable message delivery through a database-backed queue to prevent Telegram API conflicts.
 - **User Configuration:** New users are prompted to set their city. Existing users can update their settings.
 - **Admin Panel:** A simple Flask-based admin interface for managing mode settings and users (allow, block, unblock, or remove). Includes access control and flash notifications.
@@ -15,71 +14,84 @@ To use the bot, the end user can configure their city with a simple telegram cha
 
 ## Project Structure
 
-```
+```text
 ├── .env.example             # Sample environment variables file
 ├── .gitignore
 ├── Dockerfile               # Docker container build instructions
-├── docker-compose.yml       # Production deployment Docker Compose file
-├── docker-compose.local.yml # Local deployment Docker Compose file for testing changes
-├── admin.py                 # Flask-based admin panel
-├── bot.py                   # Main Telegram bot code handling commands and messaging
-├── bot_manager.py           # Singleton pattern for managing bot instance
-├── config.py                # Configuration variables and settings
-├── CHANGELOG.md
-├── DEVELOPER_GUIDE.md       # Developer instructions and best practices
-├── custom_bot.py            # Custom Bot class with sync message support
-├── fetcher.py               # Module for fetching match data (e.g., from an API or local source)
-├── LICENSE
-├── README.md                # This documentation file
-├── requirements.txt         # Python dependencies
-├── run_bot.py               # Standalone entry point for the bot service
-├── scheduler.py             # Scheduler setup with APScheduler to schedule notification jobs
-├── storage.py               # Database module for user data and message queue (using SQLAlchemy)
-├── teams.yml                # Teams configuration file
-├── wsgi.py                  # WSGI application entry point for the admin interface
-├── static/                  
-│   └── favicon.ico          # Favicon for the admin panel
-└── templates/
-    └── admin.html           # Admin panel HTML template with favicon link
+├── docker-compose.yml       # Production deployment compose (production)
+├── docker-compose.local.yml # Local compose for rapid iteration
+├── partita_bot/             # Python package with core modules
+│   ├── __init__.py
+│   ├── admin.py             # Flask admin logic and view helpers
+│   ├── bot.py               # Telegram handlers, conversations, error handling
+│   ├── bot_manager.py       # Singleton bot instance ownership guard
+│   ├── config.py            # Environment configuration and constants
+│   ├── custom_bot.py        # Sync-friendly wrapper over python-telegram-bot
+│   ├── event_fetcher.py     # Exa Answer integration and schema enforcement
+│   ├── notifications.py     # City grouping, cooldowns, and queue helpers
+│   ├── scheduler.py         # APScheduler job definitions and triggers
+│   └── storage.py           # SQLAlchemy models for users/message queue/cache
+├── run_bot.py               # Entry point that boots bot, scheduler, and queue worker
+├── wsgi.py                  # WSGI callable used when serving the admin interface
+├── templates/               # Flask templates (kept at repo root for Jinja lookup)
+│   └── admin.html           # Admin dashboard layout
+├── static/                  # Static assets served by the admin interface
+│   └── favicon.ico
+├── tests/                   # pytest suite covering package modules and entrypoints
+├── pyproject.toml           # Build, lint, and test configuration (primary toolchain)
+└── requirements.txt         # Pin-compatible dependency bundle for pip installs
 ```
+
+Core modules now live inside `partita_bot/`, but the root entrypoints `run_bot.py` and `wsgi.py` keep their previous paths and import from the package. Templates and static assets remain at the repository root so Flask can locate them without additional path tweaks.
 
 ## Setup and Configuration
 
 1. **Environment Variables:**  
-   Copy `.env.example` to `.env` and update the necessary variables. Common settings include:
-   - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token
-   - `ADMIN_PORT`: Port for the admin interface
-   - `ADMIN_USERNAME`/`ADMIN_PASSWORD`: Admin panel credentials
-   - `NOTIFICATION_START_HOUR`/`NOTIFICATION_END_HOUR`: Notification time window
-   - `SERVICE_TYPE`: Can be "bot", "admin", or empty to run both
+    Copy `.env.example` to `.env` and update the necessary variables. Common settings include:
+    - `TELEGRAM_BOT_TOKEN`: Your Telegram bot token
+    - `ADMIN_PORT`: Port for the admin interface
+    - `ADMIN_USERNAME`/`ADMIN_PASSWORD`: Admin panel credentials
+    - `NOTIFICATION_START_HOUR`/`NOTIFICATION_END_HOUR`: Notification time window
+    - `EXA_API_KEY`: Bearer credential for Exa Answer, required for event detection queries
+    - `SERVICE_TYPE`: Can be "bot", "admin", or empty to run both
 
 2. **Dependencies:**  
-   All dependencies are listed in `requirements.txt`. They include:
-   - python-telegram-bot (v20.7)
-   - Flask and Flask-HTTPAuth
-   - SQLAlchemy
-   - APScheduler
-   - nest_asyncio (for handling nested event loops)
-   - Other libraries such as pytz, requests, PyYAML, and python-dotenv
+    Dependencies are declared in `pyproject.toml` so you can use `uv` or `pip` even when pairing with `requirements.txt`. They include:
+    - python-telegram-bot (v20.7)
+    - Flask and Flask-HTTPAuth
+    - SQLAlchemy
+    - APScheduler
+    - nest_asyncio (for handling nested event loops)
+    - Other libraries such as requests and python-dotenv
 
 3. **Database:**  
-   The `storage.py` module handles database operations including:
-   - User management
-   - Message queue for reliable notifications
-   - Scheduler state tracking
+    The `storage.py` module handles database operations including:
+    - User management
+    - Message queue for reliable notifications
+    - Scheduler state tracking
+    - `event_cache` table: stores Exa Answer responses keyed by normalized city + date so repeated city lookups are avoided (scheduler and admin flows reuse cached data)
+
+## Testing & Linting
+
+- **Linting:** `ruff check .` enforces style, type hints, and formatting rules centralized in `pyproject.toml`.
+- **Tests:** `pytest --cov=. --cov-report=term` runs the unit suite with coverage reporting (new tests cover config, storage cache, event fetcher, scheduler grouping, and admin notify flows).
+- Both commands use the same dependency definitions declared in `pyproject.toml`, so installing with `uv install` or `pip install .[dev]` keeps tooling aligned.
 
 ## Running the Bot
 
 ### Via Docker (Production)
 
 1. **Build and run:**
+
    ```bash
    docker compose up -d --build
    ```
+
    This uses the default `docker-compose.yml` which supports separated services.
 
 2. **Logs:**
    Monitor logs with:
+
    ```bash
    docker compose logs -f
    ```
@@ -89,11 +101,13 @@ To use the bot, the end user can configure their city with a simple telegram cha
 For improved stability, you can run the bot and admin panel as separate services:
 
 1. **Run bot service only:**
+
    ```bash
    SERVICE_TYPE=bot docker compose up -d
    ```
 
 2. **Run admin panel only:**
+
    ```bash
    SERVICE_TYPE=admin docker compose up -d
    ```
@@ -103,6 +117,7 @@ For improved stability, you can run the bot and admin panel as separate services
 For local testing with your latest changes without pushing to GitHub, use `docker-compose.local.yml`:
 
 1. **Build and run locally:**
+
    ```bash
    docker compose -f docker-compose.local.yml up -d --build
    ```
@@ -112,6 +127,7 @@ For local testing with your latest changes without pushing to GitHub, use `docke
 
 3. **Logs:**
    Check real-time logs:
+
    ```bash
    docker compose -f docker-compose.local.yml logs -f
    ```

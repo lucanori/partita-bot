@@ -1,12 +1,16 @@
-import nest_asyncio
-nest_asyncio.apply()
-
 import asyncio
 import logging
-from telegram.ext import Application
+
+import nest_asyncio
 from telegram.error import TelegramError
+from telegram.ext import Application
+
+_NEST_LOOP = asyncio.new_event_loop()
+asyncio.set_event_loop(_NEST_LOOP)
+nest_asyncio.apply()
 
 logger = logging.getLogger(__name__)
+
 
 class Bot:
     def __init__(self, token):
@@ -37,7 +41,7 @@ class Bot:
 
     def send_message_sync(self, chat_id: int, text: str):
         loop = self._get_event_loop()
-        
+
         try:
             success, error = loop.run_until_complete(self._send_message_async(chat_id, text))
             if not success:
@@ -48,7 +52,7 @@ class Bot:
             logger.error(f"Runtime error in event loop: {str(e)}")
             self._loop = None
             loop = self._get_event_loop()
-            
+
             try:
                 success, error = loop.run_until_complete(self._send_message_async(chat_id, text))
                 if not success:

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=70.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "partita-bot"
+version = "0.1.0"
+description = "Notification bot for city events powered by Exa Answer"
+requires-python = ">=3.10"
+dependencies = [
+    "python-telegram-bot==20.7",
+    "python-dotenv==1.0.0",
+    "Flask==3.0.0",
+    "Flask-HTTPAuth==4.8.0",
+    "SQLAlchemy==2.0.48",
+    "requests==2.32.2",
+    "APScheduler==3.10.4",
+    "nest_asyncio==1.5.6",
+    "gunicorn==23.0.0",
+    "werkzeug>=3.0.6",
+    "zipp>=3.19.1",
+    "urllib3>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.0.285",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "T"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "--cov=. --cov-report=term"
+testpaths = ["tests"]
