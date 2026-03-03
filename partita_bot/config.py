@@ -37,3 +37,6 @@ ADMIN_PORT = int(os.getenv("ADMIN_PORT", "5000"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY") or os.urandom(24)
+
+# Bot language configuration (global, not per-user)
+BOT_LANGUAGE = os.getenv("BOT_LANGUAGE", "English")

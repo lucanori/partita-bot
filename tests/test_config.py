@@ -42,3 +42,43 @@ def test_missing_exa_api_key_logs(monkeypatch, caplog):
         assert "EXA_API_KEY" in caplog.text
     finally:
         _reset_config(monkeypatch, previous, previous_skip)
+
+
+def test_bot_language_default_is_english(monkeypatch):
+    previous = os.environ.get("BOT_LANGUAGE")
+    previous_skip = os.environ.get("PARTITA_SKIP_DOTENV")
+    try:
+        monkeypatch.delenv("BOT_LANGUAGE", raising=False)
+        monkeypatch.setenv("PARTITA_SKIP_DOTENV", "true")
+        importlib.reload(config)
+        assert config.BOT_LANGUAGE == "English"
+    finally:
+        if previous is None:
+            monkeypatch.delenv("BOT_LANGUAGE", raising=False)
+        else:
+            monkeypatch.setenv("BOT_LANGUAGE", previous)
+        if previous_skip is None:
+            monkeypatch.delenv("PARTITA_SKIP_DOTENV", raising=False)
+        else:
+            monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
+        importlib.reload(config)
+
+
+def test_bot_language_reload(monkeypatch):
+    previous = os.environ.get("BOT_LANGUAGE")
+    previous_skip = os.environ.get("PARTITA_SKIP_DOTENV")
+    try:
+        monkeypatch.setenv("BOT_LANGUAGE", "Italian")
+        monkeypatch.setenv("PARTITA_SKIP_DOTENV", "true")
+        importlib.reload(config)
+        assert config.BOT_LANGUAGE == "Italian"
+    finally:
+        if previous is None:
+            monkeypatch.delenv("BOT_LANGUAGE", raising=False)
+        else:
+            monkeypatch.setenv("BOT_LANGUAGE", previous)
+        if previous_skip is None:
+            monkeypatch.delenv("PARTITA_SKIP_DOTENV", raising=False)
+        else:
+            monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
+        importlib.reload(config)

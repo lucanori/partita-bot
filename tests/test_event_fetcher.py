@@ -20,150 +20,113 @@ class DummyResponse:
 
 
 class MockSession:
-    def __init__(self, response: DummyResponse):
-        self.response = response
+    def __init__(self, responses: list[DummyResponse] | DummyResponse | None = None):
+        if responses is None:
+            self.responses = []
+        elif isinstance(responses, DummyResponse):
+            self.responses = [responses]
+        else:
+            self.responses = responses
         self.calls: list[dict] = []
+        self.call_index = 0
 
     def post(self, url: str, headers=None, json=None, timeout=None):
         self.calls.append({"url": url, "json": json, "headers": headers})
-        return self.response
+        if self.call_index < len(self.responses):
+            response = self.responses[self.call_index]
+            self.call_index += 1
+            return response
+        return DummyResponse({})
 
 
 class FailingSession:
-    def post(self, *args, **kwargs):  # pragma: no cover - ensures cache is used
-        raise AssertionError("Exa Answer should not be invoked when cache is fresh")
+    def post(self, *args, **kwargs):
+        raise AssertionError("Exa should not be invoked when cache is fresh")
 
 
-def test_event_fetcher_formats_and_caches_data(monkeypatch):
+def test_event_fetcher_gate_no_no_search_call(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        payload = {
-            "answer": {
-                "status": "yes",
+        gate_payload = {"answer": {"status": "no"}}
+        session = MockSession(DummyResponse(gate_payload))
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+        target_date = date(2026, 3, 2)
+
+        message = fetcher.fetch_event_message("Roma", target_date)
+        assert message is None
+        assert len(session.calls) == 1
+        assert session.calls[0]["url"] == event_fetcher.EXA_ANSWER_ENDPOINT
+
+        cached = db.get_event_cache("Roma", target_date)
+        assert cached is not None
+        assert cached["status"] == "no"
+
+
+def test_event_fetcher_gate_yes_search_called_with_links(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
                 "events": [
                     {
                         "title": "Finale",
                         "time": "21:00",
-                        "location": "Stadio",
+                        "location": "Stadio Olimpico, Roma",
                         "type": "Calcio",
                         "details": "Coppa Italia",
                         "event_date": "2026-03-02",
+                        "source_url": "https://example.com/event1",
                     }
-                ],
+                ]
             }
         }
-        session = MockSession(DummyResponse(payload))
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
         assert "Finale" in message
-        assert session.calls
-        query = session.calls[0]["json"]["query"]
-        lower_query = query.lower()
-        assert "rispondi in italiano" in lower_query
-        assert "in data 02/03/2026 ci sarà" in lower_query
-        assert "nella seguente città: roma?" in lower_query
-        assert "status='yes'" in lower_query
-        assert "events" in lower_query
-        assert "orari, location, tipo, dettagli rilevanti" in lower_query
-        assert "event_date" in lower_query
-        assert "yyyy-mm-dd" in lower_query
-        assert "includi solo eventi" in lower_query
-        assert session.calls[0]["headers"]["x-api-key"] == "test-key"
+        assert "🔗 https://example.com/event1" in message
+        assert len(session.calls) == 2
+        assert session.calls[0]["url"] == event_fetcher.EXA_ANSWER_ENDPOINT
+        assert session.calls[1]["url"] == event_fetcher.EXA_SEARCH_ENDPOINT
 
         cached = db.get_event_cache("Roma", target_date)
         assert cached is not None
         assert cached["status"] == "yes"
-        assert cached["events"]
+        assert len(cached["events"]) == 1
+        assert cached["events"][0]["source_url"] == "https://example.com/event1"
 
 
-def test_event_fetcher_handles_no_events(monkeypatch):
+def test_search_filters_wrong_date(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        session = MockSession(DummyResponse({"answer": {"status": "no", "events": []}}))
-        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
-        target_date = date(2026, 3, 2)
-
-        assert fetcher.fetch_event_message("Roma", target_date) is None
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "no"
-
-
-def test_event_fetcher_uses_cache_before_calling_api(monkeypatch):
-    with Database(database_url="sqlite:///:memory:") as db:
-        target_date = date(2026, 3, 2)
-        db.save_event_cache(
-            "Roma",
-            target_date,
-            "yes",
-            [{"title": "Cached", "time": "19:00", "event_date": "2026-03-02"}],
-        )
-
-        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-
-        fetcher = EventFetcher(db, http_client=cast(requests.Session, FailingSession()))
-        message = fetcher.fetch_event_message("Roma", target_date)
-        assert message is not None
-        assert "Cached" in message
-
-
-def test_output_schema_requires_events():
-    schema = event_fetcher.OUTPUT_SCHEMA
-    assert schema["required"] == ["status", "events"]
-    event_items = schema["properties"]["events"]["items"]
-    assert event_items["required"] == ["title", "time", "event_date"]
-    assert set(event_items["properties"]) >= {
-        "title",
-        "time",
-        "location",
-        "type",
-        "details",
-        "event_date",
-    }
-
-
-def test_build_query_includes_guidance():
-    with Database(database_url="sqlite:///:memory:") as db:
-        fetcher = EventFetcher(db)
-        query = fetcher._build_query("Parma", date(2026, 2, 27))
-
-    lower_query = query.lower()
-    assert lower_query.startswith("rispondi in italiano")
-    assert "in data 27/02/2026 ci sarà" in lower_query
-    assert "nella seguente città: parma?" in lower_query
-    assert "status='yes'" in query
-    assert "events=[]" in query
-    assert "orari, location, tipo, dettagli rilevanti" in lower_query
-    assert "event_date" in lower_query
-    assert "yyyy-mm-dd" in lower_query
-    assert "includi solo eventi" in lower_query
-    assert "2026-02-27" in query
-
-
-def test_extract_payload_filters_events_with_wrong_date(monkeypatch):
-    with Database(database_url="sqlite:///:memory:") as db:
-        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        payload = {
-            "answer": {
-                "status": "yes",
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
                 "events": [
                     {
                         "title": "Correct Event",
                         "time": "21:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Calcio",
                         "event_date": "2026-03-02",
+                        "source_url": "https://example.com/correct",
                     },
                     {
                         "title": "Wrong Date Event",
                         "time": "20:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Calcio",
                         "event_date": "2026-03-03",
+                        "source_url": "https://example.com/wrong",
                     },
-                ],
+                ]
             }
         }
-        session = MockSession(DummyResponse(payload))
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
@@ -174,83 +137,148 @@ def test_extract_payload_filters_events_with_wrong_date(monkeypatch):
 
         cached = db.get_event_cache("Roma", target_date)
         assert cached is not None
-        assert cached["status"] == "yes"
         assert len(cached["events"]) == 1
         assert cached["events"][0]["title"] == "Correct Event"
 
 
-def test_extract_payload_filters_events_missing_event_date(monkeypatch):
+def test_search_filters_wrong_city(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        payload = {
-            "answer": {
-                "status": "yes",
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
+                "events": [
+                    {
+                        "title": "Roma Event",
+                        "time": "21:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Calcio",
+                        "event_date": "2026-03-02",
+                        "source_url": "https://example.com/roma",
+                    },
+                    {
+                        "title": "Cremona Event",
+                        "time": "20:00",
+                        "location": "Stadio Cremona",
+                        "type": "Calcio",
+                        "event_date": "2026-03-02",
+                        "source_url": "https://example.com/cremona",
+                    },
+                ]
+            }
+        }
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+        target_date = date(2026, 3, 2)
+
+        message = fetcher.fetch_event_message("Roma", target_date)
+        assert message is not None
+        assert "Roma Event" in message
+        assert "Cremona Event" not in message
+
+        cached = db.get_event_cache("Roma", target_date)
+        assert cached is not None
+        assert len(cached["events"]) == 1
+        assert cached["events"][0]["title"] == "Roma Event"
+
+
+def test_search_filters_missing_source_url(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
                 "events": [
                     {
                         "title": "Valid Event",
                         "time": "21:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Calcio",
                         "event_date": "2026-03-02",
+                        "source_url": "https://example.com/valid",
                     },
                     {
-                        "title": "Missing Date Event",
+                        "title": "Missing URL Event",
                         "time": "20:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Calcio",
+                        "event_date": "2026-03-02",
                     },
-                ],
+                ]
             }
         }
-        session = MockSession(DummyResponse(payload))
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
         assert "Valid Event" in message
-        assert "Missing Date Event" not in message
+        assert "Missing URL Event" not in message
 
         cached = db.get_event_cache("Roma", target_date)
         assert cached is not None
-        assert cached["status"] == "yes"
         assert len(cached["events"]) == 1
 
 
-def test_extract_payload_treats_as_no_events_when_all_filtered(monkeypatch):
-    with Database(database_url="sqlite:///:memory:") as db:
-        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        payload = {
-            "answer": {
-                "status": "yes",
-                "events": [
-                    {
-                        "title": "Wrong Date Event 1",
-                        "time": "21:00",
-                        "event_date": "2026-03-03",
-                    },
-                    {
-                        "title": "Missing Date Event",
-                        "time": "20:00",
-                    },
-                ],
-            }
-        }
-        session = MockSession(DummyResponse(payload))
-        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
-        target_date = date(2026, 3, 2)
-
-        message = fetcher.fetch_event_message("Roma", target_date)
-        assert message is None
-
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "no"
-        assert cached["events"] == []
-
-
-def test_cached_events_missing_event_date_are_filtered_and_cache_updated():
+def test_cache_revalidation_filters_legacy_events(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         target_date = date(2026, 3, 2)
         legacy_events = [
-            {"title": "Legacy Event 1", "time": "19:00"},
-            {"title": "Legacy Event 2", "time": "20:00"},
+            {
+                "title": "Legacy No URL",
+                "time": "19:00",
+                "event_date": "2026-03-02",
+                "location": "Roma",
+            },
+            {
+                "title": "Legacy Wrong City",
+                "time": "20:00",
+                "event_date": "2026-03-02",
+                "source_url": "https://example.com",
+                "location": "Milano",
+            },
+            {
+                "title": "Valid Legacy",
+                "time": "21:00",
+                "event_date": "2026-03-02",
+                "source_url": "https://example.com",
+                "location": "Roma",
+            },
+        ]
+        db.save_event_cache("Roma", target_date, "yes", legacy_events)
+
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, FailingSession()))
+        message = fetcher.fetch_event_message("Roma", target_date)
+
+        assert message is not None
+        assert "Valid Legacy" in message
+        assert "Legacy No URL" not in message
+        assert "Legacy Wrong City" not in message
+
+        cached = db.get_event_cache("Roma", target_date)
+        assert cached is not None
+        assert len(cached["events"]) == 1
+        assert cached["events"][0]["title"] == "Valid Legacy"
+
+
+def test_cache_revalidation_returns_none_when_all_legacy_invalid(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        target_date = date(2026, 3, 2)
+        legacy_events = [
+            {
+                "title": "Legacy No URL",
+                "time": "19:00",
+                "event_date": "2026-03-02",
+                "location": "Roma",
+            },
+            {
+                "title": "Legacy Wrong City",
+                "time": "20:00",
+                "event_date": "2026-03-02",
+                "source_url": "https://example.com",
+                "location": "Milano",
+            },
         ]
         db.save_event_cache("Roma", target_date, "yes", legacy_events)
 
@@ -262,105 +290,325 @@ def test_cached_events_missing_event_date_are_filtered_and_cache_updated():
         cached = db.get_event_cache("Roma", target_date)
         assert cached is not None
         assert cached["status"] == "no"
-        assert cached["events"] == []
 
 
-def test_cached_events_with_wrong_date_are_filtered_and_cache_updated():
+def test_city_classification_prompt_prefers_city_country_format(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        session = MockSession(
+            DummyResponse({"answer": {"is_city": True, "canonical_name": "Parma, Italy"}})
+        )
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+
+        query = fetcher._build_classification_query("Parma")
+        assert "City, Country" in query
+        assert "Parma, Italy" in query or "city with country" in query.lower()
+
+        is_city, canonical = fetcher.classify_city("Parma")
+        assert is_city is True
+        assert canonical == "parma, italy"
+
+
+def test_event_fetcher_uses_cache_before_calling_api(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         target_date = date(2026, 3, 2)
-        wrong_date_events = [
-            {"title": "Yesterday Event", "time": "19:00", "event_date": "2026-03-01"},
-            {"title": "Tomorrow Event", "time": "20:00", "event_date": "2026-03-03"},
-        ]
-        db.save_event_cache("Roma", target_date, "yes", wrong_date_events)
+        db.save_event_cache(
+            "Roma",
+            target_date,
+            "yes",
+            [
+                {
+                    "title": "Cached",
+                    "time": "19:00",
+                    "event_date": "2026-03-02",
+                    "source_url": "https://example.com/cached",
+                    "location": "Roma",
+                }
+            ],
+        )
+
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
 
         fetcher = EventFetcher(db, http_client=cast(requests.Session, FailingSession()))
         message = fetcher.fetch_event_message("Roma", target_date)
+        assert message is not None
+        assert "Cached" in message
 
+
+def test_gate_output_schema_requires_status_only():
+    schema = event_fetcher.GATE_OUTPUT_SCHEMA
+    assert schema["required"] == ["status"]
+    assert "status" in schema["properties"]
+
+
+def test_search_output_schema_requires_source_url():
+    schema = event_fetcher.SEARCH_OUTPUT_SCHEMA
+    event_items = schema["properties"]["events"]["items"]
+    assert "source_url" in event_items["required"]
+    assert "source_url" in event_items["properties"]
+
+
+def test_build_gate_query_includes_guidance():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+        query = fetcher._build_gate_query("Parma", date(2026, 2, 27))
+
+    lower_query = query.lower()
+    assert "status='yes'" in lower_query or "status='no'" in lower_query
+    assert "only" in lower_query
+    assert "parma" in lower_query
+
+
+def test_build_search_query_includes_source_url_requirement_and_language(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "BOT_LANGUAGE", "Italian")
+        fetcher = EventFetcher(db)
+        query = fetcher._build_search_query("Parma", date(2026, 2, 27))
+
+    lower_query = query.lower()
+    assert "source_url" in lower_query
+    assert "respond in italian" in lower_query
+
+
+def test_build_search_query_uses_default_english_language(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "BOT_LANGUAGE", "English")
+        fetcher = EventFetcher(db)
+        query = fetcher._build_search_query("Parma", date(2026, 2, 27))
+
+    lower_query = query.lower()
+    assert "respond in english" in lower_query
+    assert "find sports events" in lower_query
+
+
+def test_no_valid_events_after_filtering_caches_no(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
+                "events": [
+                    {
+                        "title": "Wrong City Event",
+                        "time": "21:00",
+                        "location": "Stadio Milano",
+                        "type": "Calcio",
+                        "event_date": "2026-03-02",
+                        "source_url": "https://example.com",
+                    },
+                ]
+            }
+        }
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+        target_date = date(2026, 3, 2)
+
+        message = fetcher.fetch_event_message("Roma", target_date)
         assert message is None
 
         cached = db.get_event_cache("Roma", target_date)
         assert cached is not None
         assert cached["status"] == "no"
-        assert cached["events"] == []
 
 
-def test_cached_mixed_events_only_valid_ones_sent_and_re_cached():
+def test_event_matches_city_checks_location_title_details():
     with Database(database_url="sqlite:///:memory:") as db:
-        target_date = date(2026, 3, 2)
-        mixed_events = [
-            {"title": "Valid Today Event", "time": "19:00", "event_date": "2026-03-02"},
-            {"title": "Legacy Missing Date", "time": "20:00"},
-            {"title": "Wrong Date Event", "time": "21:00", "event_date": "2026-03-01"},
-            {"title": "Another Valid Event", "time": "22:00", "event_date": "2026-03-02"},
-        ]
-        db.save_event_cache("Roma", target_date, "yes", mixed_events)
+        fetcher = EventFetcher(db)
 
-        fetcher = EventFetcher(db, http_client=cast(requests.Session, FailingSession()))
-        message = fetcher.fetch_event_message("Roma", target_date)
+        event_in_location = {
+            "title": "Concert",
+            "location": "Stadio Olimpico, Roma",
+            "details": "Great show",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_in_location, "Roma") is True
 
-        assert message is not None
-        assert "Valid Today Event" in message
-        assert "Another Valid Event" in message
-        assert "Legacy Missing Date" not in message
-        assert "Wrong Date Event" not in message
+        event_in_title = {
+            "title": "Roma vs Milan",
+            "location": "Stadio Nazionale",
+            "details": "Match",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_in_title, "Roma") is True
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "yes"
-        assert len(cached["events"]) == 2
-        titles = [e["title"] for e in cached["events"]]
-        assert "Valid Today Event" in titles
-        assert "Another Valid Event" in titles
-        assert "Legacy Missing Date" not in titles
-        assert "Wrong Date Event" not in titles
+        event_in_details = {
+            "title": "Concert",
+            "location": "Stadio Nazionale",
+            "details": "Event in Roma city center",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_in_details, "Roma") is True
+
+        event_no_match = {
+            "title": "Milano Event",
+            "location": "Stadio San Siro, Milano",
+            "details": "Match in Milano",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_no_match, "Roma") is False
 
 
-def test_extract_payload_keeps_only_exact_date_events(monkeypatch):
+def test_event_matches_city_does_not_match_country_only():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+
+        event_italy_only = {
+            "title": "National Event",
+            "location": "Various locations across Italy",
+            "details": "A nationwide celebration",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_italy_only, "Parma, Italy") is False
+
+        event_parma_only = {
+            "title": "Parma Event",
+            "location": "Stadium in Parma",
+            "details": "Local match",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_parma_only, "Parma, Italy") is True
+
+
+def test_event_matches_city_multi_token_city_core():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+
+        event_new_york = {
+            "title": "NYC Concert",
+            "location": "Madison Square Garden, New York",
+            "details": "Live performance",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_new_york, "New York, United States") is True
+
+        event_york_only = {
+            "title": "York Event",
+            "location": "Historic York, UK",
+            "details": "Medieval festival",
+            "event_date": "2026-03-02",
+            "source_url": "https://example.com",
+        }
+        assert fetcher._event_matches_city(event_york_only, "New York, United States") is False
+
+
+def test_search_payload_uses_deep_type(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        payload = {
-            "answer": {
-                "status": "yes",
-                "events": [
-                    {
-                        "title": "Today Event 1",
-                        "time": "15:00",
-                        "event_date": "2026-03-02",
-                    },
-                    {
-                        "title": "Yesterday Event",
-                        "time": "20:00",
-                        "event_date": "2026-03-01",
-                    },
-                    {
-                        "title": "Today Event 2",
-                        "time": "21:00",
-                        "event_date": "2026-03-02",
-                    },
-                    {
-                        "title": "Tomorrow Event",
-                        "time": "18:00",
-                        "event_date": "2026-03-03",
-                    },
-                ],
-            }
-        }
-        session = MockSession(DummyResponse(payload))
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {"output": {"events": []}}
+        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
-        message = fetcher.fetch_event_message("Roma", target_date)
-        assert message is not None
-        assert "Today Event 1" in message
-        assert "Today Event 2" in message
-        assert "Yesterday Event" not in message
-        assert "Tomorrow Event" not in message
+        fetcher.fetch_event_message("Roma", target_date)
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "yes"
-        assert len(cached["events"]) == 2
-        titles = [e["title"] for e in cached["events"]]
-        assert "Today Event 1" in titles
-        assert "Today Event 2" in titles
+        search_call = session.calls[1]
+        assert search_call["json"]["type"] == "deep"
+
+
+def test_extract_search_payload_handles_output_content_events():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+
+        payload_output_content = {
+            "output": {
+                "content": {
+                    "events": [
+                        {
+                            "title": "Test Event",
+                            "time": "20:00",
+                            "location": "Stadium",
+                            "type": "Sport",
+                            "event_date": "2026-03-02",
+                            "source_url": "https://example.com",
+                        }
+                    ]
+                }
+            }
+        }
+        result = fetcher._extract_search_payload(payload_output_content)
+        assert result is not None
+        assert len(result["events"]) == 1
+        assert result["events"][0]["title"] == "Test Event"
+
+
+def test_extract_search_payload_handles_direct_events():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+
+        payload_direct = {
+            "events": [
+                {
+                    "title": "Direct Event",
+                    "time": "21:00",
+                    "location": "Arena",
+                    "type": "Concert",
+                    "event_date": "2026-03-02",
+                    "source_url": "https://example.com/direct",
+                }
+            ]
+        }
+        result = fetcher._extract_search_payload(payload_direct)
+        assert result is not None
+        assert len(result["events"]) == 1
+        assert result["events"][0]["title"] == "Direct Event"
+
+
+def test_extract_search_payload_handles_output_events():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+
+        payload_output = {
+            "output": {
+                "events": [
+                    {
+                        "title": "Output Event",
+                        "time": "19:00",
+                        "location": "Hall",
+                        "type": "Theater",
+                        "event_date": "2026-03-02",
+                        "source_url": "https://example.com/output",
+                    }
+                ]
+            }
+        }
+        result = fetcher._extract_search_payload(payload_output)
+        assert result is not None
+        assert len(result["events"]) == 1
+        assert result["events"][0]["title"] == "Output Event"
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+        events = [
+            {
+                "title": "Test Event",
+                "time": "20:00",
+                "location": "Stadio",
+                "type": "Calcio",
+                "details": "Test details",
+                "source_url": "https://example.com/event",
+            }
+        ]
+        message = fetcher._format_event_message("Roma", date(2026, 3, 2), events)
+        assert "🔗 https://example.com/event" in message
+
+
+def test_format_event_message_omits_link_when_missing():
+    with Database(database_url="sqlite:///:memory:") as db:
+        fetcher = EventFetcher(db)
+        events = [
+            {
+                "title": "Test Event",
+                "time": "20:00",
+                "location": "Stadio",
+                "type": "Calcio",
+            }
+        ]
+        message = fetcher._format_event_message("Roma", date(2026, 3, 2), events)
+        assert "🔗" not in message
