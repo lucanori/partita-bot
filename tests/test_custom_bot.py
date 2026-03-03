@@ -12,11 +12,14 @@ class DummyTelegramBot:
     def __init__(self):
         self.sent: list[tuple[int, str]] = []
         self.fail_message: bool = False
+        self.message_id_counter: int = 100
 
     async def send_message(self, chat_id: int, text: str):
         if self.fail_message:
             raise TelegramError("boom")
         self.sent.append((chat_id, text))
+        self.message_id_counter += 1
+        return type("Message", (), {"message_id": self.message_id_counter})()
 
 
 class DummyApplication:
@@ -51,9 +54,11 @@ def test_bot_requires_token():
 def test_send_message_sync_success(monkeypatch):
     monkeypatch.setattr(custom_bot, "Application", DummyApplication)
     bot = custom_bot.Bot("token")
-    success, error = bot.send_message_sync(chat_id=123, text="hey")
+    success, error, message_id = bot.send_message_sync(chat_id=123, text="hey")
     assert success
     assert error is None
+    assert message_id is not None
+    assert message_id > 0
     assert bot.bot.sent == [(123, "hey")]
     builder = DummyApplication.last_builder
     assert builder is not None
@@ -64,9 +69,10 @@ def test_send_message_sync_handles_telegram_error(monkeypatch):
     monkeypatch.setattr(custom_bot, "Application", DummyApplication)
     bot = custom_bot.Bot("token")
     bot.bot.fail_message = True
-    success, error = bot.send_message_sync(chat_id=99, text="fail")
+    success, error, message_id = bot.send_message_sync(chat_id=99, text="fail")
     assert not success
     assert isinstance(error, str) and "boom" in error
+    assert message_id is None
 
 
 def test_send_message_sync_recovers_after_runtime_error(monkeypatch):
@@ -93,7 +99,8 @@ def test_send_message_sync_recovers_after_runtime_error(monkeypatch):
         return next(generator)
 
     monkeypatch.setattr(custom_bot.Bot, "_get_event_loop", fake_get_event_loop)
-    success, error = bot.send_message_sync(chat_id=101, text="retry")
+    success, error, message_id = bot.send_message_sync(chat_id=101, text="retry")
     assert success
     assert error is None
+    assert message_id is not None
     assert bot.bot.sent[-1] == (101, "retry")

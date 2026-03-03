@@ -132,3 +132,146 @@ def test_admin_index_shows_block_status(admin_test_env):
     assert "Blocked" in html
     assert "Last Block Check" in html
     assert "Yes" in html
+
+
+def test_send_custom_message_queues_message(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/send_custom_message/1",
+            data={"message_text": "Hello custom message!"},
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    queued = db.get_pending_messages()
+    assert queued
+    assert queued[0].message == "Hello custom message!"
+    assert queued[0].telegram_id == 1
+
+
+def test_send_custom_message_empty_text_fails(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/send_custom_message/1",
+            data={"message_text": "  "},
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    queued = db.get_pending_messages()
+    assert len(queued) == 0
+
+
+def test_send_custom_message_user_not_found(admin_test_env):
+    admin_app, db, _ = admin_test_env
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/send_custom_message/999",
+            data={"message_text": "Hello!"},
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    queued = db.get_pending_messages()
+    assert len(queued) == 0
+
+
+def test_delete_user_pending_removes_recent_messages(admin_test_env):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    db.queue_message(1, "Old message 1")
+    db.queue_message(1, "Old message 2")
+    db.queue_message(1, "Recent message")
+    messages = db.get_pending_messages(limit=10)
+    old_time = datetime.now(tz=ZoneInfo("UTC")) - timedelta(hours=25)
+    for msg in messages[:2]:
+        msg.created_at = old_time
+    db.session.commit()
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/delete_user_pending/1",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    remaining = db.get_pending_messages(limit=10)
+    assert len(remaining) == 2
+    assert all("Old message" in msg.message for msg in remaining)
+
+
+def test_delete_user_pending_no_messages(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/delete_user_pending/1",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    remaining = db.get_pending_messages(limit=10)
+    assert len(remaining) == 0
+
+
+def test_delete_user_pending_user_not_found(admin_test_env):
+    admin_app, db, _ = admin_test_env
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/delete_user_pending/999",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+
+def test_delete_user_sent_last_hour_queues_operation(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/delete_user_sent_last_hour/1",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    pending = db.get_pending_messages()
+    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
+    assert len(admin_ops) == 1
+    assert "DELETE_SENT_LAST_HOURS:1:1" in admin_ops[0].message
+
+
+def test_delete_user_sent_last_hour_user_not_found(admin_test_env):
+    admin_app, db, _ = admin_test_env
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/delete_user_sent_last_hour/999",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    pending = db.get_pending_messages()
+    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
+    assert len(admin_ops) == 0
