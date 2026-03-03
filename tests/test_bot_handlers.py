@@ -27,10 +27,12 @@ class FakeUpdate:
 
 
 class FakeDB:
-    def __init__(self, access=True, existing_user=None):
+    def __init__(self, access=True, existing_user=None, user_cities=None):
         self.access = access
         self.user = existing_user
+        self.user_cities = user_cities or []
         self.added: list[tuple[int, str, str]] = []
+        self.cities_set: list[list[str]] = []
 
     def check_access(self, telegram_id: int) -> bool:
         return self.access
@@ -41,6 +43,26 @@ class FakeDB:
     def add_user(self, telegram_id: int, username: str, city: str):
         self.added.append((telegram_id, username, city))
         return SimpleNamespace(telegram_id=telegram_id, username=username, city=city)
+
+    def get_user_cities(self, telegram_id: int) -> list[str]:
+        return self.user_cities
+
+    def set_user_cities(self, telegram_id: int, cities: list[str]) -> list[str]:
+        self.cities_set.append(cities)
+        self.user_cities = cities
+        return cities
+
+    def get_city_classification(self, normalized_name: str):
+        return (None, "")
+
+    def set_city_classification(
+        self, normalized_name: str, is_city: bool, canonical_name: str = ""
+    ):
+        pass
+
+    @staticmethod
+    def normalize_city(city: str) -> str:
+        return city.strip().casefold()
 
 
 def _make_update(user_id: int = 42, text: str = "") -> FakeUpdate:
@@ -65,21 +87,34 @@ def test_start_new_user_shows_welcome(monkeypatch):
 
 
 def test_start_existing_user_shows_current_city(monkeypatch):
-    fake_db = FakeDB(access=True, existing_user=SimpleNamespace(city="Verona"))
+    fake_db = FakeDB(
+        access=True, existing_user=SimpleNamespace(city="Verona"), user_cities=["verona"]
+    )
     monkeypatch.setattr(bot, "db", fake_db)
     update = _make_update(user_id=21)
     asyncio.run(bot.start(update, SimpleNamespace()))
     assert "Bentornato" in update.message.replies[0][0]
 
 
+class FakeEventFetcher:
+    def __init__(self, db):
+        self.db = db
+
+    def classify_city(self, location: str):
+        return (True, location.strip().casefold())
+
+
 def test_set_city_records_choice(monkeypatch):
     fake_db = FakeDB(access=True)
     monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcher)
     update = _make_update(text="  roma  ")
     asyncio.run(bot.set_city(update, SimpleNamespace()))
     assert fake_db.added
     assert fake_db.added[0][2] == "roma"
-    assert "Ho impostato la tua città" in update.message.replies[0][0]
+    assert fake_db.cities_set
+    assert "roma" in fake_db.cities_set[0]
+    assert "Ho impostato le tue città" in update.message.replies[0][0]
 
 
 def test_error_handler_replies(monkeypatch):

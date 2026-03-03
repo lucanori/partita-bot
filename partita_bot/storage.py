@@ -89,6 +89,26 @@ class SchedulerState(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class UserCity(Base):
+    __tablename__ = "user_cities"
+    __table_args__ = (UniqueConstraint("user_id", "city", name="uq_user_city"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    city = Column(String, nullable=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class CityClassificationCache(Base):
+    __tablename__ = "city_classification_cache"
+
+    id = Column(Integer, primary_key=True)
+    normalized_name = Column(String, unique=True, nullable=False)
+    is_city = Column(Boolean, nullable=False)
+    canonical_name = Column(String, nullable=False, default="")
+    created_at = Column(DateTime, default=_utcnow)
+
+
 class EventCache(Base):
     __tablename__ = "event_cache"
     __table_args__ = (UniqueConstraint("city", "date", name="uq_event_cache_city_date"),)
@@ -150,12 +170,106 @@ class Database:
                 conn.execute(text("INSERT INTO scheduler_state (id) VALUES (1)"))
         if not inspector.has_table("event_cache"):
             EventCache.__table__.create(self.engine)
+        if not inspector.has_table("user_cities"):
+            UserCity.__table__.create(self.engine)
+            self._migrate_single_city_to_multi()
+        if not inspector.has_table("city_classification_cache"):
+            CityClassificationCache.__table__.create(self.engine)
+        else:
+            cache_columns = [
+                col["name"] for col in inspector.get_columns(CityClassificationCache.__tablename__)
+            ]
+            if "canonical_name" not in cache_columns:
+                with self.engine.connect() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE city_classification_cache "
+                            "ADD COLUMN canonical_name VARCHAR DEFAULT ''"
+                        )
+                    )
 
     @staticmethod
     def normalize_city(city: str) -> str:
         if not city:
             return ""
         return city.strip().casefold()
+
+    def _migrate_single_city_to_multi(self):
+        users = self.session.query(User).all()
+        for user in users:
+            normalized = self.normalize_city(user.city)
+            if normalized:
+                existing = (
+                    self.session.query(UserCity)
+                    .filter_by(user_id=user.telegram_id, city=normalized)
+                    .first()
+                )
+                if not existing:
+                    user_city = UserCity(user_id=user.telegram_id, city=normalized)
+                    self.session.add(user_city)
+        self.session.commit()
+
+    def get_user_cities(self, telegram_id: int) -> list[str]:
+        cities = (
+            self.session.query(UserCity)
+            .filter_by(user_id=telegram_id)
+            .order_by(UserCity.created_at)
+            .all()
+        )
+        return [c.city for c in cities]
+
+    def set_user_cities(self, telegram_id: int, cities: list[str]) -> list[str]:
+        normalized = []
+        seen = set()
+        for city in cities:
+            norm = self.normalize_city(city)
+            if norm and norm not in seen:
+                normalized.append(norm)
+                seen.add(norm)
+        normalized = normalized[:3]
+        self.session.query(UserCity).filter_by(user_id=telegram_id).delete()
+        for city in normalized:
+            user_city = UserCity(user_id=telegram_id, city=city)
+            self.session.add(user_city)
+        self.session.commit()
+        return normalized
+
+    def get_city_classification(self, normalized_name: str) -> tuple[bool | None, str]:
+        entry = (
+            self.session.query(CityClassificationCache)
+            .filter_by(normalized_name=normalized_name)
+            .first()
+        )
+        if not entry:
+            return (None, "")
+        ttl_days = 365
+        cutoff = self._get_utc_now() - timedelta(days=ttl_days)
+        created = self._ensure_timezone_aware(entry.created_at)
+        if created and created < cutoff:
+            return (None, "")
+        return (entry.is_city, entry.canonical_name or "")
+
+    def set_city_classification(
+        self, normalized_name: str, is_city: bool, canonical_name: str = ""
+    ):
+        existing = (
+            self.session.query(CityClassificationCache)
+            .filter_by(normalized_name=normalized_name)
+            .first()
+        )
+        if existing:
+            existing.is_city = is_city
+            existing.canonical_name = canonical_name
+            existing.created_at = self._get_utc_now()
+        else:
+            entry = CityClassificationCache(
+                normalized_name=normalized_name,
+                is_city=is_city,
+                canonical_name=canonical_name,
+                created_at=self._get_utc_now(),
+            )
+            self.session.add(entry)
+        self.session.commit()
 
     def add_user(self, telegram_id: int, username: str, city: str) -> User:
         user = self.session.query(User).filter_by(telegram_id=telegram_id).first()
@@ -477,6 +591,17 @@ class Database:
             "errors": errors,
         }
 
+    def clear_city_classification_cache(self) -> int:
+        from sqlalchemy import delete
+
+        stmt = delete(CityClassificationCache)
+        result = self.session.execute(stmt)
+        self.session.commit()
+        count = result.rowcount
+        logger = logging.getLogger(__name__)
+        logger.info(f"Cleared {count} entries from city classification cache")
+        return count
+
     def close(self) -> None:
         if hasattr(self, "session"):
             try:
@@ -545,7 +670,7 @@ class Database:
             check_time = self._get_utc_now()
             try:
                 message = await bot.bot.send_message(
-                    chat_id=user_id, text="🔍 Verifica blocco", disable_notification=True
+                    chat_id=user_id, text="test-message", disable_notification=True
                 )
                 await bot.bot.delete_message(chat_id=user_id, message_id=message.message_id)
                 self.mark_user_unblocked(user_id, timestamp=check_time)

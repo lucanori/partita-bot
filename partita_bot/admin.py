@@ -139,18 +139,23 @@ def notify_user(user_id):
         )
         return redirect(url_for("index"))
 
-    local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
-    message = event_fetcher.fetch_event_message(user.city, local_time.date())
-
-    if not message:
-        flash(f"No events found for user {user_id} in {user.city}. Notification not sent.", "info")
+    cities = db.get_user_cities(user_id)
+    if not cities:
+        flash(f"User {user_id} has no cities configured. Notification not sent.", "info")
         return redirect(url_for("index"))
 
-    if send_message_via_db_queue(chat_id=user_id, text=message):
+    local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
+    messages_sent = 0
+    for city in cities:
+        message = event_fetcher.fetch_event_message(city, local_time.date())
+        if message and send_message_via_db_queue(chat_id=user_id, text=message):
+            messages_sent += 1
+
+    if messages_sent > 0:
         db.update_last_notification(user_id, is_manual=True)
-        flash(f"Notification sent to user {user_id}", "success")
+        flash(f"Notification sent to user {user_id} for {messages_sent} cities", "success")
     else:
-        flash("Failed to queue the notification.", "error")
+        flash(f"No events found for user {user_id}. Notification not sent.", "info")
 
     return redirect(url_for("index"))
 
@@ -170,8 +175,11 @@ def test_notification(user_id):
         )
         return redirect(url_for("index"))
 
+    cities = db.get_user_cities(user_id)
+    cities_str = ", ".join(c.title() for c in cities) if cities else "Nessuna"
+
     message = (
-        f"🎯 Test notifiche eventi per {user.city}:\n"
+        f"🎯 Test notifiche eventi per {cities_str}:\n"
         "🕒 15:00 – Evento di prova\n"
         "📍 Centro città\n\n"
         "Questo è un messaggio di test per verificare il sistema."
@@ -249,6 +257,18 @@ def delete_user_sent_last_hour(user_id):
         LOGGER.exception("Failed to queue delete sent messages operation")
         flash(f"Error queueing delete operation: {exc}", "error")
 
+    return redirect(url_for("index"))
+
+
+@app.route("/clear_classification_cache", methods=["POST"])
+@auth.login_required
+def clear_classification_cache():
+    try:
+        count = db.clear_city_classification_cache()
+        flash(f"City classification cache cleared. {count} entries removed.", "success")
+    except Exception as exc:
+        LOGGER.exception("Failed to clear classification cache")
+        flash(f"Error clearing cache: {exc}", "error")
     return redirect(url_for("index"))
 
 

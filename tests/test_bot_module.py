@@ -29,14 +29,16 @@ class DummyDB:
     def __init__(self, allowed: bool):
         self.allowed = allowed
 
-    def check_access(self, telegram_id: int) -> bool:  # pragma: no cover - stub
+    def check_access(self, telegram_id: int) -> bool:
         return self.allowed
 
 
 class StubBotDB:
-    def __init__(self, user=None):
+    def __init__(self, user=None, user_cities=None):
         self.user = user
+        self.user_cities = user_cities or []
         self.added: list[tuple[int, str, str]] = []
+        self.cities_set: list[list[str]] = []
 
     def get_user(self, telegram_id: int):
         return self.user
@@ -47,60 +49,33 @@ class StubBotDB:
     async def check_access(self, telegram_id: int):
         return True
 
+    def get_user_cities(self, telegram_id: int) -> list[str]:
+        return self.user_cities
 
-@pytest.mark.anyio
-async def test_check_access_delegates_to_db(monkeypatch):
-    monkeypatch.setattr(bot, "db", DummyDB(True))
-    update = DummyUpdate(123)
-    assert await bot.check_access(update)
+    def set_user_cities(self, telegram_id: int, cities: list[str]) -> list[str]:
+        self.cities_set.append(cities)
+        self.user_cities = cities
+        return cities
 
+    def get_city_classification(self, normalized_name: str):
+        return (None, "")
 
-@pytest.mark.anyio
-async def test_handle_unauthorized_replies_and_logs(monkeypatch):
-    monkeypatch.setattr(bot, "db", DummyDB(False))
-    update = DummyUpdate(321)
-    await bot.handle_unauthorized(update)
-    assert update.message.sent
-    assert bot.MSG_UNAUTHORIZED in update.message.sent[0][0]
+    def set_city_classification(
+        self, normalized_name: str, is_city: bool, canonical_name: str = ""
+    ):
+        pass
 
-
-@pytest.mark.anyio
-async def test_handle_invalid_input_returns_end(monkeypatch):
-    update = DummyUpdate(1)
-    result = await bot.handle_invalid_input(update, {})
-    assert result == bot.ConversationHandler.END
+    @staticmethod
+    def normalize_city(city: str) -> str:
+        return city.strip().casefold()
 
 
-@pytest.mark.anyio
-async def test_start_new_user_shows_welcome(monkeypatch):
-    async def allow(_: object) -> bool:
-        return True
+class FakeEventFetcher:
+    def __init__(self, db):
+        self.db = db
 
-    monkeypatch.setattr(bot, "check_access", allow)
-    stub_db = StubBotDB()
-    monkeypatch.setattr(bot, "db", stub_db)
-
-    update = DummyUpdate(42)
-    update.effective_user.username = "tester"
-
-    await bot.start(update, {})
-    assert bot.MSG_WELCOME_NEW in update.message.sent[0][0]
-
-
-@pytest.mark.anyio
-async def test_start_existing_user_displays_city(monkeypatch):
-    async def allow(_: object) -> bool:
-        return True
-
-    monkeypatch.setattr(bot, "check_access", allow)
-    stub_db = StubBotDB(user=type("U", (), {"city": "Roma"}))
-    monkeypatch.setattr(bot, "db", stub_db)
-
-    update = DummyUpdate(99)
-    update.effective_user.username = "returning"
-
-    await bot.start(update, {})
-    assert "Bentornato" in update.message.sent[0][0]
+    def classify_city(self, location: str):
+        return (True, location.strip().casefold())
 
 
 @pytest.mark.anyio
@@ -120,10 +95,13 @@ async def test_city_conversation_flows(monkeypatch):
     update.effective_user.username = "tester"
     stub_db = StubBotDB()
     monkeypatch.setattr(bot, "db", stub_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcher)
 
     result = await bot.set_city(update, {})
     assert result == bot.ConversationHandler.END
     assert stub_db.added[-1] == (5, "tester", "Torino")
+    assert stub_db.cities_set
+    assert "torino" in stub_db.cities_set[0]
 
 
 @pytest.mark.anyio

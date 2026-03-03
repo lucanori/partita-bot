@@ -40,6 +40,8 @@ def test_notify_all_groups_by_city(admin_test_env):
     admin_app, db, fetcher = admin_test_env
     db.add_user(1, "alice", "Roma")
     db.add_user(2, "bob", "roma")
+    db.set_user_cities(1, ["roma"])
+    db.set_user_cities(2, ["roma"])
 
     with admin_app.app.test_client() as client:
         response = client.post("/notify_all", headers=auth_header(), follow_redirects=True)
@@ -53,12 +55,13 @@ def test_notify_all_groups_by_city(admin_test_env):
 def test_notify_user_manual_trigger(admin_test_env):
     admin_app, db, fetcher = admin_test_env
     db.add_user(1, "alice", "Roma")
+    db.set_user_cities(1, ["roma"])
 
     with admin_app.app.test_client() as client:
         response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
         assert response.status_code == 200
 
-    assert fetcher.calls == ["Roma"]
+    assert fetcher.calls == ["roma"]
     user = db.get_user(1)
     assert user is not None
     assert user.last_manual_notification is not None
@@ -275,3 +278,20 @@ def test_delete_user_sent_last_hour_user_not_found(admin_test_env):
     pending = db.get_pending_messages()
     admin_ops = [msg for msg in pending if msg.telegram_id == 0]
     assert len(admin_ops) == 0
+
+
+def test_clear_classification_cache_clears_entries(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.set_city_classification("roma", True, "roma")
+    db.set_city_classification("milano", True, "milano")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/clear_classification_cache",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    cached_is_city, _ = db.get_city_classification("roma")
+    assert cached_is_city is None

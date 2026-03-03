@@ -62,9 +62,10 @@ def test_event_fetcher_formats_and_caches_data(monkeypatch):
         query = session.calls[0]["json"]["query"]
         lower_query = query.lower()
         assert "rispondi in italiano" in lower_query
-        assert "oggi 02/03/2026 ci sarà" in lower_query
-        assert "ci sarà una partita di calcio o un altro evento rilevante a roma?" in lower_query
-        assert "per la data 02/03/2026 (passata o futura)" in lower_query
+        assert "in data 02/03/2026 ci sarà" in lower_query
+        assert "nella seguente città: roma?" in lower_query
+        assert "status='yes'" in lower_query
+        assert "events" in lower_query
         assert "orari, location, tipo e dettagli rilevanti" in lower_query
         assert session.calls[0]["headers"]["x-api-key"] == "test-key"
 
@@ -121,8 +122,8 @@ def test_build_query_includes_guidance():
 
     lower_query = query.lower()
     assert lower_query.startswith("rispondi in italiano")
-    assert "oggi 27/02/2026 ci sarà" in lower_query
-    assert "per la data 27/02/2026 (passata o futura)" in lower_query
-    assert 'status="yes"' in query
+    assert "in data 27/02/2026 ci sarà" in lower_query
+    assert "nella seguente città: parma?" in lower_query
+    assert "status='yes'" in query
     assert "events=[]" in query
-    assert "squadra della città" in lower_query
+    assert "orari, location, tipo e dettagli rilevanti" in lower_query

@@ -35,6 +35,16 @@ OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["status", "events"],
 }
 
+CITY_CLASSIFICATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "is_city": {"type": "boolean"},
+        "canonical_name": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["is_city"],
+}
+
 
 class EventFetcher:
     def __init__(self, db: Database, http_client: requests.Session | None = None):
@@ -94,7 +104,7 @@ class EventFetcher:
             response.raise_for_status()
             data = response.json()
             return self._extract_payload(data)
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except requests.RequestException as exc:
             LOGGER.error("Exa Answer request failed: %s", exc)
             return None
         except ValueError as exc:
@@ -105,17 +115,14 @@ class EventFetcher:
         formatted_date = target_date.strftime("%d/%m/%Y")
         city_name = city.strip() or "la città"
         part_a = (
-            "Rispondi in italiano. Oggi "
-            f"{formatted_date} ci sarà una partita di calcio o un altro evento "
-            f"rilevante a {city_name}? Per la data {formatted_date} (passata o futura) descrivi "
-            "la situazione e collega il racconto alla squadra della città, se possibile. "
+            "Rispondi in italiano. "
+            f"In data {formatted_date} ci sarà una partita di calcio e/o altri eventi rilevanti"
+            f"tipo concerti, spettacoli, ecc. nella seguente città: {city_name}? "
+            "Se sì, metti status='yes' e inserisci gli eventi nel campo events "
+            "assicurandoti di inserire: orari, location, tipo e dettagli rilevanti "
+            "quando disponibili. Altrimenti metti status='no' e events=[]. "
         )
-        part_b = (
-            'Se status="yes" fornire almeno un evento nel campo events; '
-            'se non ci sono eventi scrivi status="no" e events=[]. '
-            "Per ogni risultato fornisci orari, location, tipo e dettagli rilevanti."
-        )
-        return part_a + part_b
+        return part_a
 
     def _extract_payload(self, raw: Any) -> dict[str, Any] | None:
         if not isinstance(raw, dict):
@@ -158,3 +165,72 @@ class EventFetcher:
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    def classify_city(self, location: str) -> tuple[bool | None, str]:
+        normalized = self.db.normalize_city(location)
+        if not normalized:
+            return (None, "")
+        cached_is_city, cached_canonical = self.db.get_city_classification(normalized)
+        if cached_is_city is not None:
+            return (cached_is_city, cached_canonical)
+        if not config.EXA_API_KEY:
+            LOGGER.error("Cannot query Exa for city classification because EXA_API_KEY is missing")
+            return (None, "")
+        payload = {
+            "query": self._build_classification_query(location),
+            "outputSchema": CITY_CLASSIFICATION_SCHEMA,
+        }
+        headers = {
+            "x-api-key": config.EXA_API_KEY,
+            "Content-Type": "application/json",
+        }
+        try:
+            response = self.session.post(
+                EXA_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=HTTP_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+            result = self._extract_classification_payload(data)
+            if result is not None:
+                is_city = result.get("is_city", False)
+                canonical_name = result.get("canonical_name", "")
+                if is_city and canonical_name:
+                    canonical_normalized = self.db.normalize_city(canonical_name)
+                else:
+                    canonical_normalized = normalized if is_city else ""
+                self.db.set_city_classification(normalized, is_city, canonical_normalized)
+                return (is_city, canonical_normalized)
+            return (None, "")
+        except requests.RequestException as exc:
+            LOGGER.error("Exa city classification request failed: %s", exc)
+            return (None, "")
+        except ValueError as exc:
+            LOGGER.error("Exa city classification response could not be decoded: %s", exc)
+            return (None, "")
+
+    def _build_classification_query(self, location: str) -> str:
+        return (
+            f'Is "{location}" a city (not a region, province, state, or country)? '
+            "Respond with is_city=true if it is a city, is_city=false otherwise. "
+            "If it is a city, also provide the canonical city name in canonical_name "
+            "(correct any typos, e.g., 'parm a' -> 'Parma'). "
+            "Be strict: only accept well-known cities."
+        )
+
+    def _extract_classification_payload(self, raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            LOGGER.warning("Unexpected payload type from Exa city classification: %s", type(raw))
+            return None
+        candidate = raw
+        for key in ("answer", "output", "response", "data"):
+            if isinstance(candidate.get(key), dict):
+                candidate = candidate[key]
+                break
+        return {
+            "is_city": candidate.get("is_city", False),
+            "canonical_name": candidate.get("canonical_name", ""),
+            "reason": candidate.get("reason", ""),
+        }
