@@ -27,8 +27,9 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "location": {"type": "string"},
                     "type": {"type": "string"},
                     "details": {"type": "string"},
+                    "event_date": {"type": "string"},
                 },
-                "required": ["title", "time"],
+                "required": ["title", "time", "event_date"],
             },
         },
     },
@@ -51,6 +52,31 @@ class EventFetcher:
         self.db = db
         self.session = http_client or requests.Session()
 
+    def _filter_events_by_date(
+        self,
+        events: list[dict[str, Any]],
+        target_date: date,
+    ) -> list[dict[str, Any]]:
+        target_iso = target_date.isoformat()
+        valid_events: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_date = event.get("event_date")
+            if not event_date:
+                LOGGER.debug("Filtering out event missing event_date: %s", event.get("title"))
+                continue
+            if event_date != target_iso:
+                LOGGER.debug(
+                    "Filtering out event with wrong date: %s (expected %s, got %s)",
+                    event.get("title"),
+                    target_iso,
+                    event_date,
+                )
+                continue
+            valid_events.append(event)
+        return valid_events
+
     def fetch_event_message(self, city: str, target_date: date | None = None) -> str | None:
         normalized_city = self.db.normalize_city(city)
         if not normalized_city:
@@ -64,7 +90,22 @@ class EventFetcher:
             status = str(cached.get("status", "")).lower()
             events = cached.get("events") or []
             if status == "yes" and events:
-                return self._format_event_message(city, target_date, events)
+                valid_events = self._filter_events_by_date(events, target_date)
+                if not valid_events:
+                    LOGGER.info(
+                        "Cached events had no valid entries for date %s, updating cache",
+                        target_date,
+                    )
+                    self.db.save_event_cache(city, target_date, "no", [])
+                    return None
+                if len(valid_events) != len(events):
+                    LOGGER.info(
+                        "Filtered cached events from %d to %d valid entries",
+                        len(events),
+                        len(valid_events),
+                    )
+                    self.db.save_event_cache(city, target_date, "yes", valid_events)
+                return self._format_event_message(city, target_date, valid_events)
             return None
 
         payload = self._call_exa(city, target_date)
@@ -73,11 +114,12 @@ class EventFetcher:
 
         status = str(payload.get("status", "")).lower()
         events = payload.get("events") or []
-        self.db.save_event_cache(city, target_date, status, events)
 
         if status != "yes" or not events:
+            self.db.save_event_cache(city, target_date, "no", [])
             return None
 
+        self.db.save_event_cache(city, target_date, status, events)
         return self._format_event_message(city, target_date, events)
 
     def _call_exa(self, city: str, target_date: date) -> dict[str, Any] | None:
@@ -103,7 +145,7 @@ class EventFetcher:
             )
             response.raise_for_status()
             data = response.json()
-            return self._extract_payload(data)
+            return self._extract_payload(data, target_date)
         except requests.RequestException as exc:
             LOGGER.error("Exa Answer request failed: %s", exc)
             return None
@@ -113,18 +155,24 @@ class EventFetcher:
 
     def _build_query(self, city: str, target_date: date) -> str:
         formatted_date = target_date.strftime("%d/%m/%Y")
+        iso_date = target_date.isoformat()
         city_name = city.strip() or "la città"
-        part_a = (
+        return (
             "Rispondi in italiano. "
-            f"In data {formatted_date} ci sarà una partita di calcio e/o altri eventi rilevanti"
+            f"In data {formatted_date} ci sarà una partita di calcio e/o altri eventi rilevanti "
             f"tipo concerti, spettacoli, ecc. nella seguente città: {city_name}? "
-            "Se sì, metti status='yes' e inserisci gli eventi nel campo events "
-            "assicurandoti di inserire: orari, location, tipo e dettagli rilevanti "
-            "quando disponibili. Altrimenti metti status='no' e events=[]. "
+            "IMPORTANTE: includi SOLO eventi che si svolgono ESATTAMENTE in data "
+            f"{formatted_date} (YYYY-MM-DD: {iso_date}). "
+            "Per ogni evento, includi il campo 'event_date' con formato YYYY-MM-DD. "
+            "Se la data di un evento è incerta o mancante, NON includere quell'evento. "
+            "Metti status='yes' SOLO se almeno un evento valido con data certa rimane. "
+            "Se status='yes', inserisci gli eventi nel campo events "
+            "includendo: orari, location, tipo, dettagli rilevanti quando disponibili "
+            "e event_date (YYYY-MM-DD). "
+            "Altrimenti metti status='no' e events=[]. "
         )
-        return part_a
 
-    def _extract_payload(self, raw: Any) -> dict[str, Any] | None:
+    def _extract_payload(self, raw: Any, target_date: date | None = None) -> dict[str, Any] | None:
         if not isinstance(raw, dict):
             LOGGER.warning("Unexpected payload type from Exa Answer: %s", type(raw))
             return None
@@ -135,10 +183,22 @@ class EventFetcher:
                 candidate = candidate[key]
                 break
 
-        return {
-            "status": candidate.get("status", ""),
-            "events": candidate.get("events", []),
-        }
+        status = str(candidate.get("status", "")).lower()
+        events = candidate.get("events", [])
+
+        if not isinstance(events, list):
+            events = []
+
+        if target_date is not None:
+            valid_events = self._filter_events_by_date(events, target_date)
+
+            if status == "yes" and not valid_events:
+                LOGGER.info("Status was 'yes' but no valid events remain after filtering")
+                status = "no"
+
+            events = valid_events
+
+        return {"status": status, "events": events}
 
     def _format_event_message(
         self,
