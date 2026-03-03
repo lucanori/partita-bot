@@ -119,6 +119,16 @@
                     <form method="POST" action="{{ url_for('test_notification', user_id=user.telegram_id) }}" style="display: inline;">
                         <button type="submit" class="button test" title="Send test notification">Test Notify</button>
                     </form>
+                    <form method="POST" action="{{ url_for('send_custom_message', user_id=user.telegram_id) }}" style="display: inline; margin-top: 5px;">
+                        <input type="text" name="message_text" placeholder="Custom message..." style="padding: 4px; width: 150px;" required>
+                        <button type="submit" class="button" style="background-color: #9c27b0;" title="Send custom message">Send Custom</button>
+                    </form>
+                    <form method="POST" action="{{ url_for('delete_user_pending', user_id=user.telegram_id) }}" style="display: inline;" onsubmit="return confirm('Delete pending messages for this user from last 24h?');">
+                        <button type="submit" class="button" style="background-color: #d32f2f;" title="Delete pending messages from last 24h">Delete Pending</button>
+                    </form>
+                    <form method="POST" action="{{ url_for('delete_user_sent_last_hour', user_id=user.telegram_id) }}" style="display: inline;" onsubmit="return confirm('Delete SENT messages for this user from last 1 hour? This cannot be undone.');">
+                        <button type="submit" class="button" style="background-color: #b71c1c;" title="Delete sent messages from last 1 hour">Delete Sent (1h)</button>
+                    </form>
                 </td>
             </tr>
             {% endfor %}

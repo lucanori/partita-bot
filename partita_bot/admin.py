@@ -10,7 +10,11 @@ from flask_httpauth import HTTPBasicAuth
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import partita_bot.config as config
-from partita_bot.admin_operations import RECHECK_BLOCKED_USERS, format_admin_operation
+from partita_bot.admin_operations import (
+    DELETE_SENT_LAST_HOURS,
+    RECHECK_BLOCKED_USERS,
+    format_admin_operation,
+)
 from partita_bot.event_fetcher import EventFetcher
 from partita_bot.notifications import process_notifications
 from partita_bot.storage import Database
@@ -178,6 +182,72 @@ def test_notification(user_id):
         flash(f"Test notification sent to user {user_id}", "success")
     else:
         flash("Failed to queue test notification.", "error")
+
+    return redirect(url_for("index"))
+
+
+@app.route("/send_custom_message/<int:user_id>", methods=["POST"])
+@auth.login_required
+def send_custom_message(user_id):
+    user = db.get_user(user_id)
+    if not user:
+        flash("User not found", "error")
+        return redirect(url_for("index"))
+
+    custom_text = request.form.get("message_text", "").strip()
+    if not custom_text:
+        flash("Message text cannot be empty", "error")
+        return redirect(url_for("index"))
+
+    if send_message_via_db_queue(chat_id=user_id, text=custom_text):
+        flash(f"Custom message queued for user {user_id}", "success")
+    else:
+        flash("Failed to queue custom message.", "error")
+
+    return redirect(url_for("index"))
+
+
+@app.route("/delete_user_pending/<int:user_id>", methods=["POST"])
+@auth.login_required
+def delete_user_pending(user_id):
+    user = db.get_user(user_id)
+    if not user:
+        flash("User not found", "error")
+        return redirect(url_for("index"))
+
+    deleted = db.delete_pending_messages_for_user_last_n_hours(user_id, hours=24)
+    if deleted > 0:
+        flash(
+            f"Deleted {deleted} pending message(s) for user {user_id} from the last 24 hours",
+            "success",
+        )
+    else:
+        flash(f"No pending messages found for user {user_id} from the last 24 hours", "info")
+
+    return redirect(url_for("index"))
+
+
+@app.route("/delete_user_sent_last_hour/<int:user_id>", methods=["POST"])
+@auth.login_required
+def delete_user_sent_last_hour(user_id):
+    user = db.get_user(user_id)
+    if not user:
+        flash("User not found", "error")
+        return redirect(url_for("index"))
+
+    try:
+        db.queue_message(
+            telegram_id=0,
+            message=format_admin_operation(DELETE_SENT_LAST_HOURS, str(user_id), "1"),
+        )
+        flash(
+            f"Delete sent messages operation queued for user {user_id} (last 1 hour). "
+            "The bot will process this shortly.",
+            "info",
+        )
+    except Exception as exc:
+        LOGGER.exception("Failed to queue delete sent messages operation")
+        flash(f"Error queueing delete operation: {exc}", "error")
 
     return redirect(url_for("index"))
 
