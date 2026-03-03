@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-
-"""
-Standalone entry point for running the bot.
-This separates the bot process from the WSGI server.
-"""
-
 import asyncio
 import logging
 import os
@@ -18,6 +11,7 @@ import partita_bot.config as config
 from partita_bot.admin_operations import (
     ADMIN_OPERATION_PREFIX,
     CLEANUP_USERS,
+    DELETE_SENT_LAST_HOURS,
     RECHECK_BLOCKED_USERS,
 )
 from partita_bot.bot import run_bot
@@ -34,12 +28,18 @@ logger = logging.getLogger(__name__)
 
 RECHECK_OPERATION = RECHECK_BLOCKED_USERS
 LEGACY_CLEANUP_OPERATION = CLEANUP_USERS
+DELETE_SENT_OPERATION = DELETE_SENT_LAST_HOURS
 
 
 async def process_admin_operation(
     bot_instance, operation: str, message_id: int, db: Database
 ) -> None:
-    if operation in {RECHECK_OPERATION, LEGACY_CLEANUP_OPERATION}:
+
+    parts = operation.split(":")
+    op_type = parts[0]
+    params = parts[1:] if len(parts) > 1 else []
+
+    if op_type in {RECHECK_OPERATION, LEGACY_CLEANUP_OPERATION}:
         logger.info("Running user cleanup operation")
         try:
             results = await db.recheck_blocked_users(bot_instance)
@@ -55,6 +55,41 @@ async def process_admin_operation(
             logger.error(f"Error during admin operation: {str(admin_error)}")
         finally:
             db.mark_message_sent(message_id)
+    elif op_type == DELETE_SENT_OPERATION:
+        if not params:
+            logger.error("DELETE_SENT_LAST_HOURS operation missing telegram_id parameter")
+            db.mark_message_sent(message_id)
+            return
+        try:
+            telegram_id = int(params[0])
+            hours = int(params[1]) if len(params) > 1 else 1
+        except ValueError:
+            logger.error("Invalid parameters for DELETE_SENT_LAST_HOURS: %s", params)
+            db.mark_message_sent(message_id)
+            return
+
+        logger.info("Deleting sent messages for user %s within last %s hours", telegram_id, hours)
+        try:
+            results = await db.delete_sent_messages_for_user_within_hours(
+                bot_instance, telegram_id, hours
+            )
+            logger.info(
+                "Delete sent messages summary for user %s: %s succeeded, %s failed, "
+                "%s total attempted",
+                telegram_id,
+                results["success_count"],
+                results["error_count"],
+                results["total_attempted"],
+            )
+            if results["errors"]:
+                logger.warning("Delete errors: %s", "; ".join(results["errors"]))
+        except Exception as admin_error:
+            logger.error(f"Error during delete sent messages operation: {str(admin_error)}")
+        finally:
+            db.mark_message_sent(message_id)
+    else:
+        logger.warning("Unknown admin operation: %s", op_type)
+        db.mark_message_sent(message_id)
 
 
 def process_queued_message(
@@ -62,6 +97,7 @@ def process_queued_message(
     db: Database,
     message,
     loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.new_event_loop,
+    sleep_fn: Callable[[float], None] | None = None,
 ) -> None:
     if message.telegram_id == 0 and message.message.startswith(ADMIN_OPERATION_PREFIX):
         admin_op = message.message.replace(ADMIN_OPERATION_PREFIX, "").strip()
@@ -77,17 +113,21 @@ def process_queued_message(
 
     logger.info("Processing queued message %s for user %s", message.id, message.telegram_id)
     result = bot_instance.send_message_sync(chat_id=message.telegram_id, text=message.message)
-    if isinstance(result, tuple) and len(result) == 2:
-        success, error = result
+    if isinstance(result, tuple) and len(result) >= 2:
+        success = result[0]
+        error = result[1]
+        message_id = result[2] if len(result) > 2 else None
     else:
         success = bool(result)
         error = None
+        message_id = None
     if success:
-        db.mark_message_sent(message.id)
+        db.mark_message_sent(message.id, sent_message_id=message_id)
         logger.info(
-            "Successfully sent message %s to user %s",
+            "Successfully sent message %s to user %s (msg_id: %s)",
             message.id,
             message.telegram_id,
+            message_id,
         )
     elif is_user_blocked_error(error):
         logger.warning(
@@ -103,6 +143,9 @@ def process_queued_message(
             message.id,
             message.telegram_id,
         )
+
+    if sleep_fn is not None:
+        sleep_fn(1.0)
 
 
 def check_telegram_token_in_use(token):
@@ -149,6 +192,12 @@ if __name__ == "__main__":
 
     bot_instance = get_bot(cast(str, token))
 
+    startup_db = Database()
+    deleted_count = startup_db.delete_pending_messages_older_than(hours=24)
+    if deleted_count > 0:
+        logger.info(f"Purged {deleted_count} old pending messages on startup")
+    startup_db.close()
+
     logger.info("Starting scheduler")
     scheduler = create_scheduler()
     scheduler.start()
@@ -164,7 +213,7 @@ if __name__ == "__main__":
                 messages = db.get_pending_messages(limit=10)
                 for message in messages:
                     try:
-                        process_queued_message(bot_instance, db, message)
+                        process_queued_message(bot_instance, db, message, sleep_fn=time.sleep)
                     except Exception as e:
                         logger.error(f"Error processing message {message.id}: {str(e)}")
 
