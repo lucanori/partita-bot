@@ -35,7 +35,7 @@ MSG_CITY_PROMPT = "Invia fino a 3 città separate da virgola (solo città):"
 MSG_CITY_SET = (
     "Ho impostato le tue città: {cities}\n"
     "Riceverai notifiche ogni giorno tra le {start_hour}:00 e le {end_hour}:00 "
-    "(CET) se ci sono eventi nelle tue città!"
+    "({timezone}) se ci sono eventi nelle tue città!"
 )
 MSG_CITY_REJECTED = "Solo città sono consentite. '{location}' non è una città. Riprova."
 MSG_CITY_TOO_MANY = "Puoi impostare massimo 3 città. Riprova."
@@ -141,6 +141,7 @@ async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cities=cities_display,
             start_hour=config.NOTIFICATION_START_HOUR,
             end_hour=config.NOTIFICATION_END_HOUR,
+            timezone=config.TIMEZONE,
         ),
         reply_markup=get_main_keyboard(),
     )
