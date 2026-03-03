@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+!.env.*.example
 __pycache__/
 *.pyc
 *.pyo
@@ -30,8 +33,7 @@ venv/
 .vscode/
 *.swp
 *.swo
-tasks.md
 /test
 /data
-CLAUDE.md
 thoughts/shared/status/
+tmp/
