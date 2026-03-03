@@ -12,6 +12,7 @@
         .user-list td, .user-list th { border: 1px solid #ddd; padding: 8px; }
         .user-list tr:nth-child(even) { background-color: #f9f9f9; }
         .user-list th { background-color: #4CAF50; color: white; }
+        .blocked-status { text-align: center; font-weight: bold; }
         .button { 
             padding: 6px 12px;
             margin: 2px;
@@ -46,7 +47,7 @@
                     <button type="submit" class="button test" style="background-color: #673ab7;">Notify All Users</button>
                 </form>
                 <form method="POST" action="{{ url_for('cleanup_users') }}" style="display: inline-block;">
-                    <button type="submit" class="button" style="background-color: #d32f2f;" onclick="return confirm('This will remove all users who have blocked the bot. Continue?')">Clean Blocked Users</button>
+                    <button type="submit" class="button" style="background-color: #d32f2f;">Recheck Blocked Users</button>
                 </form>
             </div>
             <h3>Access Control Mode</h3>
@@ -79,6 +80,8 @@
                 <th>User ID</th>
                 <th>Username</th>
                 <th>City</th>
+                <th>Blocked</th>
+                <th>Last Block Check</th>
                 <th>Last Notification</th>
                 <th>Actions</th>
             </tr>
@@ -87,6 +90,8 @@
                 <td>{{ user.telegram_id }}</td>
                 <td>{{ user.username or 'N/A' }}</td>
                 <td>{{ user.city }}</td>
+                <td class="blocked-status">{{ 'Yes' if user.is_blocked else 'No' }}</td>
+                <td class="last-notification">{{ db.format_datetime(user.last_block_status_check_at) }}</td>
                 <td class="last-notification">{{ db.format_last_notification(user.telegram_id) }}</td>
                 <td>
                     <form method="POST" action="{{ url_for('toggle_access', user_id=user.telegram_id) }}" style="display: inline;">
