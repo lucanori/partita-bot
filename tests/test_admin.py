@@ -104,7 +104,7 @@ def test_cleanup_users_queues_operation(admin_test_env):
         assert response.status_code == 200
 
     pending = db.get_pending_messages()
-    assert any("ADMIN_OPERATION:CLEANUP_USERS" in item.message for item in pending)
+    assert any("ADMIN_OPERATION:RECHECK_BLOCKED_USERS" in item.message for item in pending)
 
 
 def test_test_notification_queues_message(admin_test_env):
@@ -118,3 +118,17 @@ def test_test_notification_queues_message(admin_test_env):
     queued = db.get_pending_messages()
     assert queued
     assert "Test notifiche eventi" in queued[0].message
+
+
+def test_admin_index_shows_block_status(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    user = db.add_user(10, "blocked", "Roma")
+    db.mark_user_blocked(user.telegram_id)
+
+    with admin_app.app.test_client() as client:
+        response = client.get("/", headers=auth_header())
+        html = response.get_data(as_text=True)
+
+    assert "Blocked" in html
+    assert "Last Block Check" in html
+    assert "Yes" in html

@@ -55,6 +55,28 @@ def test_process_notifications_skips_already_notified():
             local_time=local_time,
         )
 
-        assert summary["already_notified"] == 1
+    assert summary["already_notified"] == 1
+    assert summary["notifications_sent"] == 1
+    assert summary["no_events"] == 0
+
+
+def test_process_notifications_skips_blocked_users():
+    with Database(database_url="sqlite:///:memory:") as db:
+        db.add_user(1, "alice", "Roma")
+        db.add_user(2, "bob", "Milano")
+        db.mark_user_blocked(1)
+
+        fetcher = DummyFetcher()
+        local_time = datetime(2026, 3, 2, 8, tzinfo=ZoneInfo("Europe/Rome"))
+
+        summary = process_notifications(
+            users=db.get_all_users(),
+            db=db,
+            fetcher=fetcher,
+            queue_message=db.queue_message,
+            local_time=local_time,
+        )
+
         assert summary["notifications_sent"] == 1
-        assert summary["no_events"] == 0
+        queued = db.get_pending_messages()
+        assert len(queued) == 1

@@ -35,18 +35,25 @@ class StubBot:
     def __init__(self, succeed: bool = True):
         self.sent = []
         self.succeed = succeed
+        self.error_message = "Failed to send"
 
-    def send_message_sync(self, chat_id: int, text: str) -> bool:
+    def send_message_sync(self, chat_id: int, text: str) -> tuple[bool, str | None]:
         self.sent.append((chat_id, text))
-        return self.succeed
+        if self.succeed:
+            return True, None
+        return False, self.error_message
 
 
 class StubDB:
     def __init__(self):
         self.marked: list[int] = []
+        self.blocked: list[int] = []
 
     def mark_message_sent(self, message_id: int) -> None:
         self.marked.append(message_id)
+
+    def mark_user_blocked(self, telegram_id: int) -> None:
+        self.blocked.append(telegram_id)
 
 
 class AdminDB:
@@ -54,16 +61,16 @@ class AdminDB:
         self.marked: list[int] = []
         self.seen: list[tuple[str, int]] = []
 
-    async def remove_blocked_users(self, bot):
+    async def recheck_blocked_users(self, bot):
         self.seen.append((getattr(bot, "name", "bot"), 0))
-        return {"removed_users": 1, "total_users": 2, "errors": []}
+        return {"checked": 2, "unblocked": 1, "still_blocked": 1, "errors": []}
 
     def mark_message_sent(self, message_id: int) -> None:
         self.marked.append(message_id)
 
 
 class FailingAdminDB(AdminDB):
-    async def remove_blocked_users(self, bot):
+    async def recheck_blocked_users(self, bot):
         raise RuntimeError("boom")
 
 
@@ -100,6 +107,17 @@ def test_process_queued_message_regular_failure():
     run_bot.process_queued_message(bot, cast(Database, db), message)
     assert db.marked == []
     assert bot.sent == [(7, "ciao")]
+
+
+def test_process_queued_message_blocked_user():
+    bot = StubBot(succeed=False)
+    bot.error_message = "Forbidden: bot was blocked"
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=9, message="ciao", id=3)
+    run_bot.process_queued_message(bot, cast(Database, db), message)
+    assert db.marked == [3]
+    assert db.blocked == [9]
+    assert bot.sent == [(9, "ciao")]
 
 
 def test_process_queued_message_admin_operation(monkeypatch):

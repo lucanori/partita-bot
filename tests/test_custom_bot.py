@@ -51,8 +51,9 @@ def test_bot_requires_token():
 def test_send_message_sync_success(monkeypatch):
     monkeypatch.setattr(custom_bot, "Application", DummyApplication)
     bot = custom_bot.Bot("token")
-    result = bot.send_message_sync(chat_id=123, text="hey")
-    assert result
+    success, error = bot.send_message_sync(chat_id=123, text="hey")
+    assert success
+    assert error is None
     assert bot.bot.sent == [(123, "hey")]
     builder = DummyApplication.last_builder
     assert builder is not None
@@ -63,7 +64,9 @@ def test_send_message_sync_handles_telegram_error(monkeypatch):
     monkeypatch.setattr(custom_bot, "Application", DummyApplication)
     bot = custom_bot.Bot("token")
     bot.bot.fail_message = True
-    assert not bot.send_message_sync(chat_id=99, text="fail")
+    success, error = bot.send_message_sync(chat_id=99, text="fail")
+    assert not success
+    assert isinstance(error, str) and "boom" in error
 
 
 def test_send_message_sync_recovers_after_runtime_error(monkeypatch):
@@ -90,5 +93,7 @@ def test_send_message_sync_recovers_after_runtime_error(monkeypatch):
         return next(generator)
 
     monkeypatch.setattr(custom_bot.Bot, "_get_event_loop", fake_get_event_loop)
-    assert bot.send_message_sync(chat_id=101, text="retry")
+    success, error = bot.send_message_sync(chat_id=101, text="retry")
+    assert success
+    assert error is None
     assert bot.bot.sent[-1] == (101, "retry")

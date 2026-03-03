@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Callable, cast
 from zoneinfo import ZoneInfo
 
 import partita_bot.scheduler as scheduler
@@ -32,7 +33,8 @@ def test_create_scheduler_uses_background_scheduler(monkeypatch):
     assert isinstance(match_scheduler, scheduler.MatchScheduler)
     dummy = created[0]
     assert dummy.jobs
-    assert dummy.jobs[0]["id"] == "morning_notifications"
+    assert any(job.get("id") == "morning_notifications" for job in dummy.jobs)
+    assert any(job.get("id") == "weekly_blocked_recheck" for job in dummy.jobs)
 
     match_scheduler.start()
     assert dummy.started
@@ -83,7 +85,7 @@ class StubDatabase:
     def __init__(self, last_run=None):
         self.last_run = last_run
         self.updated = False
-        self.queue_message = lambda *_, **__: None
+        self.queued_messages: list[str] = []
 
     def get_scheduler_last_run(self):
         return self.last_run
@@ -93,6 +95,16 @@ class StubDatabase:
 
     def update_scheduler_last_run(self):
         self.updated = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        pass
+
+    def queue_message(self, telegram_id: int, message: str) -> bool:
+        self.queued_messages.append(message)
+        return True
 
 
 def _patch_datetime(monkeypatch, fixed_now):
@@ -138,7 +150,8 @@ def _setup_scheduler(monkeypatch, fixed_now, last_run=None):
 def test_scheduler_runs_notifications_within_window(monkeypatch):
     fixed_now = datetime(2026, 3, 2, 8, 30, tzinfo=ZoneInfo("UTC"))
     _, stub_scheduler, stub_db, summary_calls = _setup_scheduler(monkeypatch, fixed_now)
-    job_func = stub_scheduler.jobs[0]["func"]
+    job_dict = next(job for job in stub_scheduler.jobs if job.get("id") == "morning_notifications")
+    job_func = cast(Callable[[], None], job_dict["func"])
     job_func()
     assert summary_calls
     assert stub_db.updated
@@ -147,7 +160,8 @@ def test_scheduler_runs_notifications_within_window(monkeypatch):
 def test_scheduler_skips_outside_window(monkeypatch):
     fixed_now = datetime(2026, 3, 2, 5, 0, tzinfo=ZoneInfo("UTC"))
     _, stub_scheduler, stub_db, summary_calls = _setup_scheduler(monkeypatch, fixed_now)
-    job_func = stub_scheduler.jobs[0]["func"]
+    job_dict = next(job for job in stub_scheduler.jobs if job.get("id") == "morning_notifications")
+    job_func = cast(Callable[[], None], job_dict["func"])
     job_func()
     assert not summary_calls
     assert not stub_db.updated
@@ -158,7 +172,19 @@ def test_scheduler_skips_if_already_run_today(monkeypatch):
     _, stub_scheduler, stub_db, summary_calls = _setup_scheduler(
         monkeypatch, fixed_now, last_run=fixed_now
     )
-    job_func = stub_scheduler.jobs[0]["func"]
+    job_dict = next(job for job in stub_scheduler.jobs if job.get("id") == "morning_notifications")
+    job_func = cast(Callable[[], None], job_dict["func"])
     job_func()
     assert not summary_calls
     assert not stub_db.updated
+
+
+def test_scheduler_enqueues_weekly_blocked_recheck(monkeypatch):
+    fixed_now = datetime(2026, 3, 2, 1, 0, tzinfo=ZoneInfo("UTC"))
+    _, stub_scheduler, stub_db, _ = _setup_scheduler(monkeypatch, fixed_now)
+    job_dict = next(job for job in stub_scheduler.jobs if job.get("id") == "weekly_blocked_recheck")
+    job_func = cast(Callable[[], None], job_dict["func"])
+    job_func()
+    assert any(
+        "ADMIN_OPERATION:RECHECK_BLOCKED_USERS" in message for message in stub_db.queued_messages
+    )

@@ -92,11 +92,37 @@ class FakeBot:
         self.bot = FakeTelegramClient(blocked_ids)
 
 
-def test_remove_blocked_users(db):
+def test_recheck_blocked_users(db):
     db.add_user(1, "alpha", "Roma")
     db.add_user(2, "beta", "Milano")
+    db.mark_user_blocked(1)
+    db.mark_user_blocked(2)
     fake_bot = FakeBot(blocked_ids={2})
-    result = _run_async(db.remove_blocked_users(fake_bot))
-    assert result["removed_users"] == 1
-    assert db.get_user(2) is None
-    assert db.get_user(1) is not None
+    result = _run_async(db.recheck_blocked_users(fake_bot))
+    assert result["checked"] == 2
+    assert result["unblocked"] == 1
+    assert result["still_blocked"] == 1
+    assert result["errors"] == []
+    assert not db.get_user(1).is_blocked
+    assert db.get_user(2).is_blocked
+    assert fake_bot.bot.deleted == [(1, 999)]
+
+
+def test_recheck_blocked_users_reports_errors(db):
+    class ErrorTelegramClient(FakeTelegramClient):
+        async def send_message(self, chat_id: int, text: str, disable_notification: bool):
+            raise RuntimeError("connection problem")
+
+    class ErrorBot:
+        def __init__(self):
+            self.bot = ErrorTelegramClient(set())
+
+    db.add_user(3, "delta", "Torino")
+    db.mark_user_blocked(3)
+    result = _run_async(db.recheck_blocked_users(ErrorBot()))
+    assert result["checked"] == 1
+    assert result["unblocked"] == 0
+    assert result["still_blocked"] == 0
+    assert result["errors"]
+    user = db.get_user(3)
+    assert user.last_block_status_check_at is not None
