@@ -37,6 +37,7 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 
 1. After any code change you must run `ruff check .` and `pytest --cov=. --cov-report=term`. Both commands must pass before the work is considered complete.
 2. Structural changes (packages, module paths, service entrypoints, etc.) must be reflected in documentation (`README.md`, `DEVELOPER_GUIDE.md`, `AGENTS.md`, etc.) so engineers and AI agents can follow the new layout.
+3. never write any comments in the code. we have a no-comment policy.
 
 ## Core Components
 
