@@ -28,7 +28,7 @@ class Bot:
             asyncio.set_event_loop(self._loop)
         return self._loop
 
-    async def _send_message_async(self, chat_id: int, text: str):
+    async def _send_message_async(self, chat_id: int, text: str) -> tuple[bool, str | None]:
         try:
             await self.bot.send_message(chat_id=chat_id, text=text)
             return True, None
@@ -39,15 +39,14 @@ class Bot:
             logger.error(f"Unexpected error sending message to {chat_id}: {str(e)}")
             return False, str(e)
 
-    def send_message_sync(self, chat_id: int, text: str):
+    def send_message_sync(self, chat_id: int, text: str) -> tuple[bool, str | None]:
         loop = self._get_event_loop()
 
         try:
             success, error = loop.run_until_complete(self._send_message_async(chat_id, text))
             if not success:
                 logger.warning(f"Failed to send message to {chat_id}: {error}")
-                return False
-            return True
+            return success, error
         except RuntimeError as e:
             logger.error(f"Runtime error in event loop: {str(e)}")
             self._loop = None
@@ -57,8 +56,7 @@ class Bot:
                 success, error = loop.run_until_complete(self._send_message_async(chat_id, text))
                 if not success:
                     logger.error(f"Failed to send message after loop reset: {error}")
-                    return False
-                return True
+                return success, error
             except Exception as e:
                 logger.error(f"Fatal error sending message to {chat_id}: {str(e)}")
-                return False
+                return False, str(e)

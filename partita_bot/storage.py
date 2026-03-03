@@ -23,10 +23,18 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 Base = declarative_base()
 
 UTC_ZONE = ZoneInfo("UTC")
+ROME_ZONE = ZoneInfo("Europe/Rome")
 
 
 def _utcnow() -> datetime:
     return datetime.now(tz=UTC_ZONE)
+
+
+def is_user_blocked_error(error_message: str | None) -> bool:
+    if not error_message:
+        return False
+    normalized = error_message.lower()
+    return "forbidden" in normalized and "blocked" in normalized
 
 
 # Table to store pending messages for the bot to send
@@ -52,6 +60,8 @@ class User(Base):
     is_blocked = Column(Boolean, default=False)
     last_notification = Column(DateTime, nullable=True)
     last_manual_notification = Column(DateTime, nullable=True)
+    blocked_at = Column(DateTime, nullable=True)
+    last_block_status_check_at = Column(DateTime, nullable=True)
 
 
 class AccessControl(Base):
@@ -120,6 +130,14 @@ class Database:
         if "last_manual_notification" not in user_columns:
             with self.engine.connect() as conn:
                 conn.execute(text("ALTER TABLE users ADD COLUMN last_manual_notification DATETIME"))
+        if "blocked_at" not in user_columns:
+            with self.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN blocked_at DATETIME"))
+        if "last_block_status_check_at" not in user_columns:
+            with self.engine.connect() as conn:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN last_block_status_check_at DATETIME")
+                )
 
         if not inspector.has_table("scheduler_state"):
             SchedulerState.__table__.create(self.engine)
@@ -152,20 +170,10 @@ class Database:
         return self.session.query(User).all()
 
     def block_user(self, telegram_id: int) -> bool:
-        user = self.get_user(telegram_id)
-        if user:
-            user.is_blocked = True
-            self.session.commit()
-            return True
-        return False
+        return self.mark_user_blocked(telegram_id)
 
     def unblock_user(self, telegram_id: int) -> bool:
-        user = self.get_user(telegram_id)
-        if user:
-            user.is_blocked = False
-            self.session.commit()
-            return True
-        return False
+        return self.mark_user_unblocked(telegram_id)
 
     def set_access_mode(self, mode: str):
         if mode not in ["whitelist", "blocklist"]:
@@ -248,9 +256,17 @@ class Database:
             if tz_aware is None:
                 return "Never"
             assert tz_aware is not None
-            rome_time = tz_aware.astimezone(ZoneInfo("Europe/Rome"))
+            rome_time = tz_aware.astimezone(ROME_ZONE)
             return rome_time.strftime("%Y-%m-%d %H:%M:%S")
         return "Never"
+
+    def format_datetime(self, value: datetime | None) -> str:
+        if not value:
+            return "Never"
+        tz_aware = self._ensure_timezone_aware(value)
+        if not tz_aware:
+            return "Never"
+        return tz_aware.astimezone(ROME_ZONE).strftime("%Y-%m-%d %H:%M:%S")
 
     def update_scheduler_last_run(self):
         """Update the last run time of the scheduler"""
@@ -399,41 +415,70 @@ class Database:
         except Exception:
             logging.getLogger(__name__).exception("Error while closing database in __del__")
 
-    async def remove_blocked_users(self, bot) -> dict:
-        users = self.get_all_users()
-        total = len(users)
-        removed = 0
-        errors = []
+    def get_blocked_users(self) -> list[User]:
+        return self.session.query(User).filter_by(is_blocked=True).all()
+
+    def mark_user_blocked(self, telegram_id: int, timestamp: datetime | None = None) -> bool:
+        user = self.get_user(telegram_id)
+        if not user:
+            return False
+        now = timestamp or self._get_utc_now()
+        user.is_blocked = True
+        user.blocked_at = now
+        user.last_block_status_check_at = now
+        self.session.commit()
+        return True
+
+    def mark_user_unblocked(self, telegram_id: int, timestamp: datetime | None = None) -> bool:
+        user = self.get_user(telegram_id)
+        if not user:
+            return False
+        now = timestamp or self._get_utc_now()
+        user.is_blocked = False
+        user.blocked_at = None
+        user.last_block_status_check_at = now
+        self.session.commit()
+        return True
+
+    async def recheck_blocked_users(self, bot) -> dict[str, Any]:
+        blocked_users = self.get_blocked_users()
+        checked = len(blocked_users)
+        unblocked = 0
+        still_blocked = 0
+        errors: list[str] = []
         logger = logging.getLogger(__name__)
 
-        for user in users:
+        for user in blocked_users:
             user_id = user.telegram_id
-            logger.debug(f"Checking if user {user_id} has blocked the bot")
-
+            logger.debug("Rechecking blocked user %s", user_id)
+            check_time = self._get_utc_now()
             try:
                 message = await bot.bot.send_message(
-                    chat_id=user_id, text="test message, please ignore", disable_notification=True
+                    chat_id=user_id, text="🔍 Verifica blocco", disable_notification=True
                 )
-
-                # Message sent successfully, user has not blocked the bot
                 await bot.bot.delete_message(chat_id=user_id, message_id=message.message_id)
-                logger.debug(f"User {user_id} has not blocked the bot")
-
-            except Exception as e:
-                error_str = str(e).lower()
-
-                # Check if user has blocked the bot
-                if "forbidden" in error_str and "blocked" in error_str:
-                    logger.info(f"Removing user {user_id} who blocked the bot")
-                    self.session.delete(user)
-                    removed += 1
+                self.mark_user_unblocked(user_id, timestamp=check_time)
+                unblocked += 1
+            except Exception as exc:  # pragma: no cover - rare
+                error_text = str(exc)
+                if is_user_blocked_error(error_text):
+                    self.mark_user_blocked(user_id, timestamp=check_time)
+                    still_blocked += 1
                 else:
-                    logger.warning(f"Error checking user {user_id}: {str(e)}")
-                    errors.append(f"User {user_id}: {str(e)}")
+                    user.last_block_status_check_at = check_time
+                    self.session.commit()
+                    errors.append(f"User {user_id}: {error_text}")
 
-        # Commit changes if any users were removed
-        if removed > 0:
-            self.session.commit()
-            logger.info(f"Removed {removed} users who blocked the bot")
+        logger.info(
+            "Blocked recheck: %s checked, %s unblocked, %s still blocked",
+            checked,
+            unblocked,
+            still_blocked,
+        )
 
-        return {"total_users": total, "removed_users": removed, "errors": errors}
+        return {
+            "checked": checked,
+            "unblocked": unblocked,
+            "still_blocked": still_blocked,
+            "errors": errors,
+        }

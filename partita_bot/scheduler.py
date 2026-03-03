@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import partita_bot.config as config
+from partita_bot.admin_operations import RECHECK_BLOCKED_USERS, format_admin_operation
 from partita_bot.event_fetcher import EventFetcher
 from partita_bot.notifications import process_notifications
 from partita_bot.storage import Database
@@ -101,6 +102,25 @@ def create_scheduler() -> MatchScheduler:
         "date",
         run_date=datetime.now(tz=ZoneInfo("UTC")),
         id="morning_notifications",
+    )
+
+    def enqueue_weekly_blocked_recheck() -> None:
+        message = format_admin_operation(RECHECK_BLOCKED_USERS)
+        try:
+            with Database() as queue_db:
+                queue_db.queue_message(telegram_id=0, message=message)
+            LOGGER.info("Scheduled weekly blocked user recheck")
+        except Exception as exc:
+            LOGGER.error("Failed to schedule blocked recheck: %s", exc)
+
+    scheduler.add_job(
+        enqueue_weekly_blocked_recheck,
+        "cron",
+        day_of_week="mon",
+        hour=0,
+        minute=0,
+        id="weekly_blocked_recheck",
+        replace_existing=True,
     )
 
     return MatchScheduler(scheduler)

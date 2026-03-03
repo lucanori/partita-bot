@@ -15,12 +15,16 @@ from typing import Callable, cast
 import requests
 
 import partita_bot.config as config
+from partita_bot.admin_operations import (
+    ADMIN_OPERATION_PREFIX,
+    CLEANUP_USERS,
+    RECHECK_BLOCKED_USERS,
+)
 from partita_bot.bot import run_bot
 from partita_bot.bot_manager import get_bot
 from partita_bot.scheduler import create_scheduler
-from partita_bot.storage import Database
+from partita_bot.storage import Database, is_user_blocked_error
 
-# Configure logging
 logging_level = logging.DEBUG if config.DEBUG else logging.INFO
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging_level
@@ -28,26 +32,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+RECHECK_OPERATION = RECHECK_BLOCKED_USERS
+LEGACY_CLEANUP_OPERATION = CLEANUP_USERS
+
+
 async def process_admin_operation(
     bot_instance, operation: str, message_id: int, db: Database
 ) -> None:
-    """Process admin operations that require async functions"""
-    if operation == "CLEANUP_USERS":
+    if operation in {RECHECK_OPERATION, LEGACY_CLEANUP_OPERATION}:
         logger.info("Running user cleanup operation")
         try:
-            results = await db.remove_blocked_users(bot_instance)
+            results = await db.recheck_blocked_users(bot_instance)
             logger.info(
-                "Cleanup results: Removed %s of %s users",
-                results["removed_users"],
-                results["total_users"],
+                "Recheck summary -- checked: %s, unblocked: %s, still blocked: %s",
+                results["checked"],
+                results["unblocked"],
+                results["still_blocked"],
             )
             if results["errors"]:
-                logger.warning(f"Cleanup errors: {', '.join(results['errors'])}")
+                logger.warning("Recheck errors: %s", ", ".join(results["errors"]))
         except Exception as admin_error:
             logger.error(f"Error during admin operation: {str(admin_error)}")
-
-        # Mark the admin message as processed even if the operation failed
-        db.mark_message_sent(message_id)
+        finally:
+            db.mark_message_sent(message_id)
 
 
 def process_queued_message(
@@ -56,8 +63,8 @@ def process_queued_message(
     message,
     loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.new_event_loop,
 ) -> None:
-    if message.telegram_id == 0 and message.message.startswith("ADMIN_OPERATION:"):
-        admin_op = message.message.replace("ADMIN_OPERATION:", "").strip()
+    if message.telegram_id == 0 and message.message.startswith(ADMIN_OPERATION_PREFIX):
+        admin_op = message.message.replace(ADMIN_OPERATION_PREFIX, "").strip()
         logger.info("Processing admin operation: %s", admin_op)
 
         loop = loop_factory()
@@ -69,7 +76,12 @@ def process_queued_message(
         return
 
     logger.info("Processing queued message %s for user %s", message.id, message.telegram_id)
-    success = bot_instance.send_message_sync(chat_id=message.telegram_id, text=message.message)
+    result = bot_instance.send_message_sync(chat_id=message.telegram_id, text=message.message)
+    if isinstance(result, tuple) and len(result) == 2:
+        success, error = result
+    else:
+        success = bool(result)
+        error = None
     if success:
         db.mark_message_sent(message.id)
         logger.info(
@@ -77,6 +89,14 @@ def process_queued_message(
             message.id,
             message.telegram_id,
         )
+    elif is_user_blocked_error(error):
+        logger.warning(
+            "User %s blocked bot, flagging and marking message %s as sent",
+            message.telegram_id,
+            message.id,
+        )
+        db.mark_user_blocked(message.telegram_id)
+        db.mark_message_sent(message.id)
     else:
         logger.warning(
             "Failed to send message %s to user %s",
@@ -86,10 +106,8 @@ def process_queued_message(
 
 
 def check_telegram_token_in_use(token):
-    """Check if the token is already being used by another bot instance"""
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     try:
-        # First attempt might fail if another process is using the token
         response = requests.get(url, timeout=10)
         if response.status_code == 409:  # Conflict
             logger.warning("Telegram token is already in use by another process.")
@@ -104,7 +122,6 @@ def check_telegram_token_in_use(token):
 if __name__ == "__main__":
     logger.info(f"Starting bot process (PID: {os.getpid()})")
 
-    # Check if the token is already in use
     token = config.TELEGRAM_BOT_TOKEN
     if not token:
         logger.critical("TELEGRAM_BOT_TOKEN is not configured. Aborting startup.")
@@ -130,15 +147,12 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    # Initialize the bot
     bot_instance = get_bot(cast(str, token))
 
-    # Initialize and start the scheduler
     logger.info("Starting scheduler")
     scheduler = create_scheduler()
     scheduler.start()
 
-    # Start a thread to process queued messages
     import threading
 
     def process_message_queue():
@@ -154,19 +168,15 @@ if __name__ == "__main__":
                     except Exception as e:
                         logger.error(f"Error processing message {message.id}: {str(e)}")
 
-                # Sleep for a short time if no messages
                 if not messages:
                     time.sleep(1)
 
             except Exception as e:
                 logger.error(f"Error in message queue processing: {str(e)}")
-                time.sleep(5)  # Back off on error
+                time.sleep(5)
 
-    # Start the message queue processor thread
     queue_thread = threading.Thread(target=process_message_queue)
     queue_thread.daemon = True
     queue_thread.start()
-
-    # Start the bot polling
     logger.info("Starting bot polling")
     run_bot()

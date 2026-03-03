@@ -10,6 +10,7 @@ from flask_httpauth import HTTPBasicAuth
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import partita_bot.config as config
+from partita_bot.admin_operations import RECHECK_BLOCKED_USERS, format_admin_operation
 from partita_bot.event_fetcher import EventFetcher
 from partita_bot.notifications import process_notifications
 from partita_bot.storage import Database
@@ -82,8 +83,11 @@ def toggle_access(user_id):
 @auth.login_required
 def cleanup_users():
     try:
-        db.queue_message(telegram_id=0, message="ADMIN_OPERATION:CLEANUP_USERS")
-        flash("User cleanup operation has been queued. Check back later for results.", "info")
+        db.queue_message(
+            telegram_id=0,
+            message=format_admin_operation(RECHECK_BLOCKED_USERS),
+        )
+        flash("Blocked user recheck has been queued. Check back later for results.", "info")
     except Exception as exc:
         LOGGER.exception("Failed to queue cleanup operation")
         flash(f"Error during cleanup: {exc}", "error")

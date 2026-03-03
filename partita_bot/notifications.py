@@ -44,7 +44,11 @@ def process_notifications(
     mark_manual: bool = False,
 ) -> dict[str, int]:
     summary = {"notifications_sent": 0, "no_events": 0, "already_notified": 0}
-    city_groups = group_users_by_city(users, db)
+    active_users = [user for user in users if not user.is_blocked]
+    skipped_blocked = len(users) - len(active_users)
+    if skipped_blocked > 0:
+        LOGGER.debug("Skipping %s blocked users during notification processing", skipped_blocked)
+    city_groups = group_users_by_city(active_users, db)
     local_date = local_time.date()
 
     for normalized_city, group in city_groups.items():
