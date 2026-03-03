@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import TracebackType
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -37,7 +37,6 @@ def is_user_blocked_error(error_message: str | None) -> bool:
     return "forbidden" in normalized and "blocked" in normalized
 
 
-# Table to store pending messages for the bot to send
 class MessageQueue(Base):
     __tablename__ = "message_queue"
 
@@ -47,6 +46,7 @@ class MessageQueue(Base):
     created_at = Column(DateTime, default=_utcnow)
     sent = Column(Boolean, default=False)
     sent_at = Column(DateTime, nullable=True)
+    sent_message_id = Column(Integer, nullable=True)
 
 
 class User(Base):
@@ -139,6 +139,11 @@ class Database:
                     text("ALTER TABLE users ADD COLUMN last_block_status_check_at DATETIME")
                 )
 
+        queue_columns = [col["name"] for col in inspector.get_columns(MessageQueue.__tablename__)]
+        if "sent_message_id" not in queue_columns:
+            with self.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE message_queue ADD COLUMN sent_message_id INTEGER"))
+
         if not inspector.has_table("scheduler_state"):
             SchedulerState.__table__.create(self.engine)
             with self.engine.begin() as conn:
@@ -213,17 +218,14 @@ class Database:
             )
 
     def _get_utc_now(self) -> datetime:
-        """Get current UTC time with timezone info"""
         return datetime.now(tz=UTC_ZONE)
 
     def _ensure_timezone_aware(self, dt: datetime | None) -> datetime | None:
-        """Ensure datetime is timezone aware (UTC)"""
         if dt is None:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=ZoneInfo("UTC"))
 
     def update_last_notification(self, telegram_id: int, is_manual: bool = False):
-        """Update the last notification timestamp for a user"""
         user = self.get_user(telegram_id)
         if user:
             now = self._get_utc_now()
@@ -233,7 +235,6 @@ class Database:
             self.session.commit()
 
     def can_send_manual_notification(self, telegram_id: int, cooldown_minutes: int = 5) -> bool:
-        """Check if a manual notification can be sent based on cooldown time"""
         user = self.get_user(telegram_id)
         if not user or not user.last_manual_notification:
             return True
@@ -249,7 +250,6 @@ class Database:
         return time_since_last.total_seconds() >= cooldown_minutes * 60
 
     def format_last_notification(self, telegram_id: int) -> str:
-        """Format the last notification time for display"""
         user = self.get_user(telegram_id)
         if user and user.last_notification:
             tz_aware = self._ensure_timezone_aware(user.last_notification)
@@ -269,7 +269,6 @@ class Database:
         return tz_aware.astimezone(ROME_ZONE).strftime("%Y-%m-%d %H:%M:%S")
 
     def update_scheduler_last_run(self):
-        """Update the last run time of the scheduler"""
         with self.engine.begin() as conn:
             conn.execute(
                 text("UPDATE scheduler_state SET last_run = :now WHERE id = 1"),
@@ -277,7 +276,6 @@ class Database:
             )
 
     def get_scheduler_last_run(self) -> datetime | None:
-        """Get the last time the scheduler ran"""
         result = self.session.query(SchedulerState).first()
         if result and result.last_run:
             tz_run = self._ensure_timezone_aware(result.last_run)
@@ -345,7 +343,6 @@ class Database:
         self.session.commit()
 
     def queue_message(self, telegram_id: int, message: str) -> bool:
-        """Queue a message to be sent by the bot process"""
         try:
             queue_item = MessageQueue(
                 telegram_id=telegram_id, message=message, created_at=self._get_utc_now()
@@ -361,7 +358,6 @@ class Database:
             return False
 
     def get_pending_messages(self, limit: int = 10) -> list:
-        """Get pending messages to be sent"""
         return (
             self.session.query(MessageQueue)
             .filter(MessageQueue.sent.is_(False))
@@ -370,13 +366,14 @@ class Database:
             .all()
         )
 
-    def mark_message_sent(self, message_id: int) -> bool:
-        """Mark a message as sent"""
+    def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> bool:
         try:
             message = self.session.get(MessageQueue, message_id)
             if message:
                 message.sent = True
                 message.sent_at = self._get_utc_now()
+                if sent_message_id is not None:
+                    message.sent_message_id = sent_message_id
                 self.session.commit()
                 return True
             return False
@@ -385,8 +382,102 @@ class Database:
             logger.error(f"Error marking message as sent: {str(e)}")
             return False
 
+    def delete_pending_messages_older_than(self, hours: int = 24) -> int:
+        from sqlalchemy import delete
+
+        cutoff = self._get_utc_now() - timedelta(hours=hours)
+        stmt = (
+            delete(MessageQueue)
+            .where(MessageQueue.sent.is_(False))
+            .where(MessageQueue.created_at < cutoff)
+        )
+        result = self.session.execute(stmt)
+        self.session.commit()
+        count = result.rowcount
+        if count > 0:
+            logger = logging.getLogger(__name__)
+            logger.info(f"Deleted {count} pending messages older than {hours} hours")
+        return count
+
+    def delete_pending_messages_for_user_last_n_hours(
+        self, telegram_id: int, hours: int = 24
+    ) -> int:
+        from sqlalchemy import delete
+
+        cutoff = self._get_utc_now() - timedelta(hours=hours)
+        stmt = (
+            delete(MessageQueue)
+            .where(MessageQueue.telegram_id == telegram_id)
+            .where(MessageQueue.sent.is_(False))
+            .where(MessageQueue.created_at >= cutoff)
+        )
+        result = self.session.execute(stmt)
+        self.session.commit()
+        count = result.rowcount
+        if count > 0:
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"Deleted {count} pending messages for user {telegram_id} from last {hours} hours"
+            )
+        return count
+
+    def get_sent_messages_for_user_within_hours(
+        self, telegram_id: int, hours: int = 1, limit: int = 500
+    ) -> list[MessageQueue]:
+        cutoff = self._get_utc_now() - timedelta(hours=hours)
+        return (
+            self.session.query(MessageQueue)
+            .filter(MessageQueue.telegram_id == telegram_id)
+            .filter(MessageQueue.sent.is_(True))
+            .filter(MessageQueue.sent_message_id.isnot(None))
+            .filter(MessageQueue.sent_at >= cutoff)
+            .order_by(MessageQueue.sent_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    async def delete_sent_messages_for_user_within_hours(
+        self, bot, telegram_id: int, hours: int = 1
+    ) -> dict[str, Any]:
+        messages = self.get_sent_messages_for_user_within_hours(telegram_id, hours)
+        success_count = 0
+        error_count = 0
+        errors: list[str] = []
+        logger = logging.getLogger(__name__)
+
+        for msg in messages:
+            if msg.sent_message_id is None:
+                continue
+            try:
+                await bot.bot.delete_message(chat_id=telegram_id, message_id=msg.sent_message_id)
+                success_count += 1
+                logger.debug("Deleted message %s for user %s", msg.sent_message_id, telegram_id)
+            except Exception as exc:
+                error_count += 1
+                error_text = str(exc)
+                errors.append(f"Message {msg.sent_message_id}: {error_text}")
+                logger.warning(
+                    "Failed to delete message %s for user %s: %s",
+                    msg.sent_message_id,
+                    telegram_id,
+                    error_text,
+                )
+
+        logger.info(
+            "Deleted %s messages for user %s (errors: %s)",
+            success_count,
+            telegram_id,
+            error_count,
+        )
+
+        return {
+            "success_count": success_count,
+            "error_count": error_count,
+            "total_attempted": len(messages),
+            "errors": errors,
+        }
+
     def close(self) -> None:
-        """Close the session and dispose of the engine."""
         if hasattr(self, "session"):
             try:
                 self.session.close()
@@ -459,7 +550,7 @@ class Database:
                 await bot.bot.delete_message(chat_id=user_id, message_id=message.message_id)
                 self.mark_user_unblocked(user_id, timestamp=check_time)
                 unblocked += 1
-            except Exception as exc:  # pragma: no cover - rare
+            except Exception as exc:
                 error_text = str(exc)
                 if is_user_blocked_error(error_text):
                     self.mark_user_blocked(user_id, timestamp=check_time)
