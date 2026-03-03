@@ -78,7 +78,7 @@ jobs:
 
       - name: Generate build attestation
         if: steps.attestation_check.outputs.supported == 'true'
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
