@@ -1,44 +1,54 @@
+name: partita-bot
+
 services:
   partita-bot:
     image: ghcr.io/lucanori/partita-bot:latest
     container_name: partita-bot
-    user: "1000:1000"
+    user: ${UID}:${GID}
     restart: unless-stopped
+    networks:
+      - helms-deep
     volumes:
-      - ./data:/app/data
-    env_file:
-      - .env
+      - ${APPDATA}/partita-bot:/app/data
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
     environment:
       - SERVICE_TYPE=bot
       - BOT_COMMAND=python run_bot.py
-      - NOTIFICATION_START_HOUR=8
-      - NOTIFICATION_END_HOUR=10
-    security_opt:
-      - "no-new-privileges:true"
-    cap_drop:
-      - "ALL"
-    read_only: true
-    tmpfs:
-      - /tmp
-
+      - DEBUG=false
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - EXA_API_KEY=${EXA_API_KEY}
+      - BOT_LANGUAGE=Italian # optional, default to English if not set
+      # - NOTIFICATION_START_HOUR=8 # optional, default to 8 if not set
+      # - NOTIFICATION_END_HOUR=20 # optional, default to 20 if not set
+      # - TIMEZONE=Europe/Rome # optional, default to Europe/Rome if not set
+  
   partita-admin:
     image: ghcr.io/lucanori/partita-bot:latest
     container_name: partita-admin
-    user: "1000:1000"
+    user: ${UID}:${GID}
     restart: unless-stopped
+    networks:
+      - helms-deep
     ports:
-      - "${ADMIN_PORT:-5000}:5000"
+      - "5086:5086"
     volumes:
-      - ./data:/app/data
-    env_file:
-      - .env
-    environment:
-      - SERVICE_TYPE=admin
-      - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:${ADMIN_PORT:-5000} --access-logfile - --error-logfile - wsgi:application
+      - ${APPDATA}/partita-bot:/app/data
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
       - "ALL"
-    read_only: true
-    tmpfs:
-      - /tmp
+    environment:
+      - SERVICE_TYPE=admin
+      - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:5086 --access-logfile - --error-logfile - wsgi:application
+      - DEBUG=false
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+      # - TIMEZONE=Europe/Rome # optional, default to Europe/Rome if not set
+
+networks:
+  helms-deep:
+    external: true
