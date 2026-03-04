@@ -1,5 +1,7 @@
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import partita_bot.bot as bot
 
@@ -26,6 +28,17 @@ class FakeUpdate:
         self.effective_message = self.message
 
 
+class FakeUserObj:
+    def __init__(
+        self, telegram_id: int, username: str = "tester", city: str = "", last_notification=None
+    ):
+        self.telegram_id = telegram_id
+        self.username = username
+        self.city = city
+        self.last_notification = last_notification
+        self.is_blocked = False
+
+
 class FakeDB:
     def __init__(
         self,
@@ -36,7 +49,7 @@ class FakeDB:
         denial_cooldown_responses=None,
     ):
         self.access = access
-        self.user = existing_user
+        self._user = existing_user
         self.user_cities = user_cities or []
         self.added: list[tuple[int, str, str]] = []
         self.cities_set: list[list[str]] = []
@@ -44,6 +57,8 @@ class FakeDB:
         self.pending_upserted: list[tuple[int, str | None]] = []
         self.denial_cooldown_responses = denial_cooldown_responses or {}
         self.denial_calls: list[tuple[int, int]] = []
+        self.queued_messages: list[tuple[int, str]] = []
+        self.last_notification_updated: list[int] = []
 
     def check_access(self, telegram_id: int) -> bool:
         return self.access
@@ -59,11 +74,21 @@ class FakeDB:
         return self.denial_cooldown_responses.get(telegram_id, True)
 
     def get_user(self, telegram_id: int):
-        return self.user
+        return self._user
 
     def add_user(self, telegram_id: int, username: str, city: str):
         self.added.append((telegram_id, username, city))
-        return SimpleNamespace(telegram_id=telegram_id, username=username, city=city)
+        if self._user is None:
+            self._user = FakeUserObj(
+                telegram_id=telegram_id,
+                username=username,
+                city=city,
+                last_notification=None,
+            )
+        else:
+            self._user.username = username
+            self._user.city = city
+        return self._user
 
     def get_user_cities(self, telegram_id: int) -> list[str]:
         return self.user_cities
@@ -80,6 +105,18 @@ class FakeDB:
         self, normalized_name: str, is_city: bool, canonical_name: str = ""
     ):
         pass
+
+    def queue_message(self, telegram_id: int, message: str) -> bool:
+        self.queued_messages.append((telegram_id, message))
+        return True
+
+    def update_last_notification(self, telegram_id: int, is_manual: bool = False):
+        self.last_notification_updated.append(telegram_id)
+        if self._user:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            self._user.last_notification = datetime.now(tz=ZoneInfo("UTC"))
 
     @staticmethod
     def normalize_city(city: str) -> str:
@@ -120,7 +157,7 @@ def test_start_new_user_shows_welcome(monkeypatch):
 
 def test_start_existing_user_shows_current_city(monkeypatch):
     fake_db = FakeDB(
-        access=True, existing_user=SimpleNamespace(city="Verona"), user_cities=["verona"]
+        access=True, existing_user=FakeUserObj(21, city="Verona"), user_cities=["verona"]
     )
     monkeypatch.setattr(bot, "db", fake_db)
     update = _make_update(user_id=21)
@@ -136,7 +173,8 @@ class FakeEventFetcher:
         return (True, location.strip().casefold())
 
 
-def test_set_city_records_choice(monkeypatch):
+def test_set_city_records_choice(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 11, 0, tzinfo=ZoneInfo("Europe/Rome")))
     fake_db = FakeDB(access=True)
     monkeypatch.setattr(bot, "db", fake_db)
     monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcher)
@@ -186,3 +224,121 @@ def test_start_unauthorized_cooldown_allows_when_true(monkeypatch):
     assert update.message.replies
     assert update.message.replies[0][0] == bot.MSG_UNAUTHORIZED
     assert fake_db.denial_calls == [(99, 300)]
+
+
+class FakeEventFetcherWithEvents:
+    def __init__(self, db):
+        self.db = db
+
+    def classify_city(self, location: str):
+        return (True, location.strip().casefold())
+
+    def fetch_event_message(self, city: str, target_date):
+        return f"Eventi per {city}"
+
+
+def test_set_city_inside_window_sends_notification(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 8, 30, tzinfo=ZoneInfo("Europe/Rome")))
+
+    fake_user = FakeUserObj(
+        telegram_id=42,
+        last_notification=None,
+    )
+    fake_db = FakeDB(access=True, existing_user=fake_user, user_cities=["roma"])
+    monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherWithEvents)
+    monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+
+    update = _make_update(user_id=42, text="roma")
+    asyncio.run(bot.set_city(update, SimpleNamespace()))
+
+    assert len(fake_db.queued_messages) == 1
+    assert fake_db.queued_messages[0][0] == 42
+    assert fake_db.last_notification_updated == [42]
+
+
+def test_set_city_outside_window_skips_notification(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 11, 0, tzinfo=ZoneInfo("Europe/Rome")))
+
+    fake_user = FakeUserObj(
+        telegram_id=42,
+        last_notification=None,
+    )
+    fake_db = FakeDB(access=True, existing_user=fake_user, user_cities=["roma"])
+    monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherWithEvents)
+    monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+
+    update = _make_update(user_id=42, text="roma")
+    asyncio.run(bot.set_city(update, SimpleNamespace()))
+
+    assert len(fake_db.queued_messages) == 0
+    assert fake_db.last_notification_updated == []
+
+
+def test_set_city_before_window_skips_notification(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 6, 0, tzinfo=ZoneInfo("Europe/Rome")))
+
+    fake_user = FakeUserObj(
+        telegram_id=42,
+        last_notification=None,
+    )
+    fake_db = FakeDB(access=True, existing_user=fake_user, user_cities=["roma"])
+    monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherWithEvents)
+    monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+
+    update = _make_update(user_id=42, text="roma")
+    asyncio.run(bot.set_city(update, SimpleNamespace()))
+
+    assert len(fake_db.queued_messages) == 0
+    assert fake_db.last_notification_updated == []
+
+
+def test_set_city_already_notified_today_skips(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 8, 30, tzinfo=ZoneInfo("Europe/Rome")))
+
+    fake_user = FakeUserObj(
+        telegram_id=42,
+        last_notification=datetime(2026, 3, 4, 7, 0, tzinfo=ZoneInfo("UTC")),
+    )
+    fake_db = FakeDB(access=True, existing_user=fake_user, user_cities=["roma"])
+    monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherWithEvents)
+    monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+
+    update = _make_update(user_id=42, text="roma")
+    asyncio.run(bot.set_city(update, SimpleNamespace()))
+
+    assert len(fake_db.queued_messages) == 0
+    assert fake_db.last_notification_updated == []
+
+
+class FakeEventFetcherNoEvents:
+    def __init__(self, db):
+        self.db = db
+
+    def classify_city(self, location: str):
+        return (True, location.strip().casefold())
+
+    def fetch_event_message(self, city: str, target_date):
+        return ""
+
+
+def test_set_city_no_events_does_nothing(monkeypatch, freezer):
+    freezer.move_to(datetime(2026, 3, 4, 8, 30, tzinfo=ZoneInfo("Europe/Rome")))
+
+    fake_user = FakeUserObj(
+        telegram_id=42,
+        last_notification=None,
+    )
+    fake_db = FakeDB(access=True, existing_user=fake_user, user_cities=["roma"])
+    monkeypatch.setattr(bot, "db", fake_db)
+    monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherNoEvents)
+    monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+
+    update = _make_update(user_id=42, text="roma")
+    asyncio.run(bot.set_city(update, SimpleNamespace()))
+
+    assert len(fake_db.queued_messages) == 0
+    assert fake_db.last_notification_updated == []

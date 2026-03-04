@@ -1,6 +1,8 @@
 import logging
 import os
 import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
@@ -9,7 +11,8 @@ import partita_bot.config as config
 from partita_bot.admin import run_admin_interface
 from partita_bot.bot_manager import get_bot
 from partita_bot.event_fetcher import EventFetcher
-from partita_bot.storage import Database
+from partita_bot.notifications import process_notifications
+from partita_bot.storage import Database, User
 
 logging_level = logging.DEBUG if config.DEBUG else logging.INFO
 logging.basicConfig(
@@ -108,6 +111,54 @@ async def start_city_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WAITING_FOR_CITY
 
 
+def _was_notified_today(user: User, local_date) -> bool:
+    last_notification = user.last_notification
+    if not last_notification:
+        return False
+
+    if last_notification.tzinfo is None:
+        last_notification = last_notification.replace(tzinfo=ZoneInfo("UTC"))
+
+    local_time = last_notification.astimezone(config.TIMEZONE_INFO)
+    return local_time.date() == local_date
+
+
+def _maybe_send_onboarding_notification(user_id: int) -> None:
+    current_utc = datetime.now(tz=ZoneInfo("UTC"))
+    local_time = current_utc.astimezone(config.TIMEZONE_INFO)
+
+    if not (config.NOTIFICATION_START_HOUR <= local_time.hour < config.NOTIFICATION_END_HOUR):
+        logger.debug("Onboarding: outside notification window, skipping immediate notification")
+        return
+
+    user = db.get_user(user_id)
+    if not user:
+        return
+
+    if _was_notified_today(user, local_time.date()):
+        logger.debug("Onboarding: user already notified today, skipping")
+        return
+
+    cities = db.get_user_cities(user_id)
+    if not cities:
+        return
+
+    fetcher = EventFetcher(db)
+
+    summary = process_notifications(
+        users=[user],
+        db=db,
+        fetcher=fetcher,
+        queue_message=db.queue_message,
+        local_time=local_time,
+    )
+
+    if summary["notifications_sent"] > 0:
+        logger.info(f"Onboarding: queued immediate notification for user {user_id}")
+    elif summary["no_events"] > 0:
+        logger.debug(f"Onboarding: no events for user {user_id}")
+
+
 async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         await handle_access_denied(update)
@@ -166,6 +217,9 @@ async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         reply_markup=get_main_keyboard(),
     )
+
+    _maybe_send_onboarding_notification(user_id)
+
     return ConversationHandler.END
 
 
