@@ -44,6 +44,7 @@ services:
       - SERVICE_TYPE=admin
       - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:5086 --access-logfile - --error-logfile - wsgi:application
       - DEBUG=false
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
