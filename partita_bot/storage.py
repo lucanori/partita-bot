@@ -130,6 +130,24 @@ class ExaCost(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class PendingAccessRequest(Base):
+    __tablename__ = "pending_access_requests"
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    username = Column(String, nullable=True)
+    first_seen = Column(DateTime, default=_utcnow)
+    last_seen = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class AccessDenialLog(Base):
+    __tablename__ = "access_denial_log"
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    last_sent = Column(DateTime, nullable=False, default=_utcnow)
+
+
 class Database:
     def __init__(self, database_url: str | None = None):
         if database_url:
@@ -198,6 +216,10 @@ class Database:
                     )
         if not inspector.has_table("exa_costs"):
             ExaCost.__table__.create(self.engine)
+        if not inspector.has_table("pending_access_requests"):
+            PendingAccessRequest.__table__.create(self.engine)
+        if not inspector.has_table("access_denial_log"):
+            AccessDenialLog.__table__.create(self.engine)
 
     @staticmethod
     def normalize_city(city: str) -> str:
@@ -733,3 +755,47 @@ class Database:
             .all()
         )
         return {source: total / 1_000_000 for source, total in results}
+
+    def upsert_pending_request(self, telegram_id: int, username: str | None) -> None:
+        existing = (
+            self.session.query(PendingAccessRequest).filter_by(telegram_id=telegram_id).first()
+        )
+        now = self._get_utc_now()
+        if existing:
+            existing.username = username
+            existing.last_seen = now
+        else:
+            request = PendingAccessRequest(
+                telegram_id=telegram_id, username=username, first_seen=now, last_seen=now
+            )
+            self.session.add(request)
+        self.session.commit()
+
+    def remove_pending_request(self, telegram_id: int) -> bool:
+        result = (
+            self.session.query(PendingAccessRequest).filter_by(telegram_id=telegram_id).delete()
+        )
+        self.session.commit()
+        return result > 0
+
+    def list_pending_requests(self) -> list[PendingAccessRequest]:
+        return (
+            self.session.query(PendingAccessRequest).order_by(PendingAccessRequest.first_seen).all()
+        )
+
+    def should_send_denial(self, telegram_id: int, cooldown_seconds: int = 300) -> bool:
+        now = self._get_utc_now()
+        entry = self.session.query(AccessDenialLog).filter_by(telegram_id=telegram_id).first()
+        if entry:
+            last_sent = self._ensure_timezone_aware(entry.last_sent)
+            if last_sent is None:
+                return True
+            time_since_last = now - last_sent
+            if time_since_last.total_seconds() < cooldown_seconds:
+                return False
+            entry.last_sent = now
+        else:
+            new_entry = AccessDenialLog(telegram_id=telegram_id, last_sent=now)
+            self.session.add(new_entry)
+        self.session.commit()
+        return True

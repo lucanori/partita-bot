@@ -27,15 +27,36 @@ class FakeUpdate:
 
 
 class FakeDB:
-    def __init__(self, access=True, existing_user=None, user_cities=None):
+    def __init__(
+        self,
+        access=True,
+        existing_user=None,
+        user_cities=None,
+        mode="blocklist",
+        denial_cooldown_responses=None,
+    ):
         self.access = access
         self.user = existing_user
         self.user_cities = user_cities or []
         self.added: list[tuple[int, str, str]] = []
         self.cities_set: list[list[str]] = []
+        self.mode = mode
+        self.pending_upserted: list[tuple[int, str | None]] = []
+        self.denial_cooldown_responses = denial_cooldown_responses or {}
+        self.denial_calls: list[tuple[int, int]] = []
 
     def check_access(self, telegram_id: int) -> bool:
         return self.access
+
+    def get_access_mode(self) -> str:
+        return self.mode
+
+    def upsert_pending_request(self, telegram_id: int, username: str | None):
+        self.pending_upserted.append((telegram_id, username))
+
+    def should_send_denial(self, telegram_id: int, cooldown_seconds: int = 300) -> bool:
+        self.denial_calls.append((telegram_id, cooldown_seconds))
+        return self.denial_cooldown_responses.get(telegram_id, True)
 
     def get_user(self, telegram_id: int):
         return self.user
@@ -69,13 +90,24 @@ def _make_update(user_id: int = 42, text: str = "") -> FakeUpdate:
     return FakeUpdate(user_id=user_id, text=text)
 
 
-def test_start_unauthorized(monkeypatch):
-    fake_db = FakeDB(access=False)
+def test_start_unauthorized_blocklist(monkeypatch):
+    fake_db = FakeDB(access=False, mode="blocklist")
     monkeypatch.setattr(bot, "db", fake_db)
     update = _make_update()
     asyncio.run(bot.start(update, SimpleNamespace()))
     assert update.message.replies
     assert update.message.replies[0][0] == bot.MSG_UNAUTHORIZED
+
+
+def test_start_unauthorized_whitelist(monkeypatch):
+    fake_db = FakeDB(access=False, mode="whitelist")
+    monkeypatch.setattr(bot, "db", fake_db)
+    update = _make_update(user_id=12345)
+    asyncio.run(bot.start(update, SimpleNamespace()))
+    assert update.message.replies
+    expected_msg = bot.MSG_UNAUTHORIZED_WHITELIST.format(user_id=12345)
+    assert update.message.replies[0][0] == expected_msg
+    assert fake_db.pending_upserted == [(12345, "tester")]
 
 
 def test_start_new_user_shows_welcome(monkeypatch):
@@ -125,3 +157,32 @@ def test_error_handler_replies(monkeypatch):
     asyncio.run(bot.error_handler(update, context))
     assert update.message.replies
     assert "Si è verificato un errore" in update.message.replies[0][0]
+
+
+def test_start_unauthorized_blocklist_cooldown_suppresses(monkeypatch):
+    fake_db = FakeDB(access=False, mode="blocklist", denial_cooldown_responses={42: False})
+    monkeypatch.setattr(bot, "db", fake_db)
+    update = _make_update(user_id=42)
+    asyncio.run(bot.start(update, SimpleNamespace()))
+    assert not update.message.replies
+    assert fake_db.denial_calls == [(42, 300)]
+
+
+def test_start_unauthorized_whitelist_cooldown_suppresses_but_upserts(monkeypatch):
+    fake_db = FakeDB(access=False, mode="whitelist", denial_cooldown_responses={12345: False})
+    monkeypatch.setattr(bot, "db", fake_db)
+    update = _make_update(user_id=12345)
+    asyncio.run(bot.start(update, SimpleNamespace()))
+    assert not update.message.replies
+    assert fake_db.pending_upserted == [(12345, "tester")]
+    assert fake_db.denial_calls == [(12345, 300)]
+
+
+def test_start_unauthorized_cooldown_allows_when_true(monkeypatch):
+    fake_db = FakeDB(access=False, mode="blocklist", denial_cooldown_responses={99: True})
+    monkeypatch.setattr(bot, "db", fake_db)
+    update = _make_update(user_id=99)
+    asyncio.run(bot.start(update, SimpleNamespace()))
+    assert update.message.replies
+    assert update.message.replies[0][0] == bot.MSG_UNAUTHORIZED
+    assert fake_db.denial_calls == [(99, 300)]

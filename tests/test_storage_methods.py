@@ -255,3 +255,84 @@ def test_delete_sent_messages_for_user_within_hours(db):
     assert result["total_attempted"] == 2
     assert len(result["errors"]) == 1
     assert deleted_messages == [(1, 1001)]
+
+
+def test_upsert_pending_request_creates_new(db):
+    db.upsert_pending_request(12345, "testuser")
+    pending = db.list_pending_requests()
+    assert len(pending) == 1
+    assert pending[0].telegram_id == 12345
+    assert pending[0].username == "testuser"
+    assert pending[0].first_seen is not None
+    assert pending[0].last_seen is not None
+
+
+def test_upsert_pending_request_updates_existing(db):
+    db.upsert_pending_request(12345, "olduser")
+    first_seen = db.list_pending_requests()[0].first_seen
+    db.upsert_pending_request(12345, "newuser")
+    pending = db.list_pending_requests()
+    assert len(pending) == 1
+    assert pending[0].telegram_id == 12345
+    assert pending[0].username == "newuser"
+    assert pending[0].first_seen == first_seen
+    assert pending[0].last_seen > first_seen
+
+
+def test_remove_pending_request(db):
+    db.upsert_pending_request(12345, "testuser")
+    assert len(db.list_pending_requests()) == 1
+    result = db.remove_pending_request(12345)
+    assert result is True
+    assert len(db.list_pending_requests()) == 0
+
+
+def test_remove_pending_request_nonexistent(db):
+    result = db.remove_pending_request(99999)
+    assert result is False
+
+
+def test_list_pending_requests_ordered_by_first_seen(db):
+    db.upsert_pending_request(3, "user3")
+    db.upsert_pending_request(1, "user1")
+    db.upsert_pending_request(2, "user2")
+    pending = db.list_pending_requests()
+    assert len(pending) == 3
+    assert pending[0].telegram_id == 3
+    assert pending[1].telegram_id == 1
+    assert pending[2].telegram_id == 2
+
+
+def test_should_send_denial_first_time_sends(db):
+    result = db.should_send_denial(99999, cooldown_seconds=300)
+    assert result is True
+
+
+def test_should_send_denial_within_cooldown_suppresses(db):
+    user_id = 88888
+    db.should_send_denial(user_id, cooldown_seconds=300)
+    result = db.should_send_denial(user_id, cooldown_seconds=300)
+    assert result is False
+
+
+def test_should_send_denial_after_cooldown_sends(db):
+    from partita_bot.storage import AccessDenialLog
+
+    user_id = 77777
+    db.should_send_denial(user_id, cooldown_seconds=300)
+    entry = db.session.query(AccessDenialLog).filter_by(telegram_id=user_id).first()
+    past = datetime.now(tz=ZoneInfo("UTC")) - timedelta(seconds=301)
+    entry.last_sent = past
+    db.session.commit()
+    result = db.should_send_denial(user_id, cooldown_seconds=300)
+    assert result is True
+
+
+def test_should_send_denial_small_cooldown(db):
+    user_id = 66666
+    db.should_send_denial(user_id, cooldown_seconds=1)
+    import time
+
+    time.sleep(1.1)
+    result = db.should_send_denial(user_id, cooldown_seconds=1)
+    assert result is True

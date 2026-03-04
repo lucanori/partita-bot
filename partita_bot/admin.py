@@ -46,6 +46,7 @@ def index():
     access_mode = db.get_access_mode()
     all_users = db.get_all_users()
     total_cost = db.get_total_exa_cost()
+    pending_requests = db.list_pending_requests() if access_mode == "whitelist" else []
     return render_template(
         "admin.html",
         users=all_users,
@@ -53,6 +54,7 @@ def index():
         current_mode=access_mode,
         db=db,
         total_cost=total_cost,
+        pending_requests=pending_requests,
     )
 
 
@@ -271,6 +273,31 @@ def clear_classification_cache():
     except Exception as exc:
         LOGGER.exception("Failed to clear classification cache")
         flash(f"Error clearing cache: {exc}", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/approve_pending/<int:user_id>", methods=["POST"])
+@auth.login_required
+def approve_pending(user_id):
+    try:
+        db.add_to_list("whitelist", user_id)
+        db.remove_pending_request(user_id)
+        flash(f"User {user_id} has been approved and added to whitelist", "success")
+    except Exception as exc:
+        LOGGER.exception(f"Failed to approve pending user {user_id}")
+        flash(f"Error approving user: {exc}", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/dismiss_pending/<int:user_id>", methods=["POST"])
+@auth.login_required
+def dismiss_pending(user_id):
+    try:
+        db.remove_pending_request(user_id)
+        flash(f"Pending request for user {user_id} has been dismissed", "info")
+    except Exception as exc:
+        LOGGER.exception(f"Failed to dismiss pending user {user_id}")
+        flash(f"Error dismissing request: {exc}", "error")
     return redirect(url_for("index"))
 
 

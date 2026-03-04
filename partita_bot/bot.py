@@ -25,6 +25,10 @@ db = Database()
 WAITING_FOR_CITY = 1
 
 MSG_UNAUTHORIZED = "Mi dispiace, non hai accesso a questo bot. Contatta l'amministratore."
+MSG_UNAUTHORIZED_WHITELIST = (
+    "Il bot è in modalità whitelist. Contatta l'amministratore per essere abilitato. "
+    "Il tuo ID: {user_id}"
+)
 MSG_WELCOME_NEW = (
     "Benvenuto! Per iniziare, usa il pulsante 'Imposta città' per selezionare fino a 3 città."
 )
@@ -53,14 +57,30 @@ async def check_access(update: Update) -> bool:
     return access_granted
 
 
-async def handle_unauthorized(update: Update):
-    await update.message.reply_text(MSG_UNAUTHORIZED, reply_markup=ReplyKeyboardRemove())
-    logger.warning(f"Unauthorized access attempt from user {update.effective_user.id}")
+async def handle_access_denied(update: Update) -> bool:
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    mode = db.get_access_mode()
+
+    if mode == "whitelist":
+        db.upsert_pending_request(user_id, username)
+
+    if db.should_send_denial(user_id):
+        if mode == "whitelist":
+            await update.message.reply_text(
+                MSG_UNAUTHORIZED_WHITELIST.format(user_id=user_id),
+                reply_markup=ReplyKeyboardRemove(),
+            )
+        else:
+            await update.message.reply_text(MSG_UNAUTHORIZED, reply_markup=ReplyKeyboardRemove())
+
+    logger.warning(f"Unauthorized access attempt from user {user_id} (mode: {mode})")
+    return False
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
-        await handle_unauthorized(update)
+        await handle_access_denied(update)
         return
 
     user_id = update.effective_user.id
@@ -81,7 +101,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_city_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
-        await handle_unauthorized(update)
+        await handle_access_denied(update)
         return ConversationHandler.END
 
     await update.message.reply_text(MSG_CITY_PROMPT, reply_markup=ReplyKeyboardRemove())
@@ -90,7 +110,7 @@ async def start_city_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
-        await handle_unauthorized(update)
+        await handle_access_denied(update)
         return ConversationHandler.END
 
     text = update.message.text.strip()
@@ -160,7 +180,7 @@ async def handle_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def show_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
-        await handle_unauthorized(update)
+        await handle_access_denied(update)
         return
 
     await update.message.reply_text(
@@ -170,7 +190,7 @@ async def show_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_general_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
-        await handle_unauthorized(update)
+        await handle_access_denied(update)
         return
 
     await update.message.reply_text(

@@ -295,3 +295,66 @@ def test_clear_classification_cache_clears_entries(admin_test_env):
 
     cached_is_city, _ = db.get_city_classification("roma")
     assert cached_is_city is None
+
+
+def test_approve_pending_adds_to_whitelist_and_removes_pending(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.set_access_mode("whitelist")
+    db.upsert_pending_request(12345, "testuser")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/approve_pending/12345",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    assert db.check_access(12345)
+    assert len(db.list_pending_requests()) == 0
+
+
+def test_dismiss_pending_removes_from_pending(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.set_access_mode("whitelist")
+    db.upsert_pending_request(12345, "testuser")
+
+    with admin_app.app.test_client() as client:
+        response = client.post(
+            "/dismiss_pending/12345",
+            headers=auth_header(),
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+    assert not db.check_access(12345)
+    assert len(db.list_pending_requests()) == 0
+
+
+def test_index_shows_pending_requests_in_whitelist_mode(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.set_access_mode("whitelist")
+    db.upsert_pending_request(111, "user1")
+    db.upsert_pending_request(222, "user2")
+
+    with admin_app.app.test_client() as client:
+        response = client.get("/", headers=auth_header())
+        html = response.get_data(as_text=True)
+
+    assert "Pending Whitelist Requests" in html
+    assert "111" in html
+    assert "222" in html
+    assert "user1" in html
+    assert "user2" in html
+
+
+def test_index_no_pending_requests_in_blocklist_mode(admin_test_env):
+    admin_app, db, _ = admin_test_env
+    db.set_access_mode("blocklist")
+    db.upsert_pending_request(111, "user1")
+
+    with admin_app.app.test_client() as client:
+        response = client.get("/", headers=auth_header())
+        html = response.get_data(as_text=True)
+
+    assert "Pending Whitelist Requests" not in html
