@@ -19,16 +19,12 @@ scheduler_logger.setLevel(logging.DEBUG if config.DEBUG else logging.WARNING)
 TIMEZONE = config.TIMEZONE_INFO
 
 
-def calculate_next_interval(
+def calculate_next_run(
     current_utc: datetime,
     start_hour: int,
-    end_hour: int,
     timezone: ZoneInfo,
-) -> float:
+) -> datetime:
     local_time = current_utc.astimezone(timezone)
-
-    if start_hour <= local_time.hour < end_hour:
-        return 15 * 60
 
     if local_time.hour < start_hour:
         next_run = datetime(
@@ -48,8 +44,7 @@ def calculate_next_interval(
             tzinfo=timezone,
         ).astimezone(ZoneInfo("UTC"))
 
-    seconds_until_next = (next_run - current_utc).total_seconds()
-    return max(seconds_until_next, 15 * 60)
+    return next_run
 
 
 def create_scheduler() -> MatchScheduler:
@@ -99,30 +94,40 @@ def create_scheduler() -> MatchScheduler:
         if summary["notifications_sent"] or summary["no_events"]:
             db.update_scheduler_last_run()
 
-    def dynamic_schedule() -> None:
-        check_and_send_notifications()
+    def schedule_next_run() -> None:
         current_utc = datetime.now(tz=ZoneInfo("UTC"))
-        interval = calculate_next_interval(
+        next_run = calculate_next_run(
             current_utc=current_utc,
             start_hour=config.NOTIFICATION_START_HOUR,
-            end_hour=config.NOTIFICATION_END_HOUR,
             timezone=TIMEZONE,
         )
         scheduler.add_job(
-            dynamic_schedule,
+            daily_job,
             "date",
-            run_date=datetime.now(tz=ZoneInfo("UTC")) + timedelta(seconds=interval),
+            run_date=next_run,
             id="morning_notifications",
             replace_existing=True,
         )
-        LOGGER.debug("Next notification check scheduled in %.1f hours", interval / 3600)
+        LOGGER.debug("Next notification check scheduled for %s", next_run.isoformat())
 
-    scheduler.add_job(
-        dynamic_schedule,
-        "date",
-        run_date=datetime.now(tz=ZoneInfo("UTC")),
-        id="morning_notifications",
-    )
+    def daily_job() -> None:
+        check_and_send_notifications()
+        schedule_next_run()
+
+    current_utc = datetime.now(tz=ZoneInfo("UTC"))
+    local_time = current_utc.astimezone(TIMEZONE)
+
+    if config.NOTIFICATION_START_HOUR <= local_time.hour < config.NOTIFICATION_END_HOUR:
+        last_run = db.get_scheduler_last_run()
+        if not (last_run and last_run.astimezone(TIMEZONE).date() == local_time.date()):
+            LOGGER.info("Starting within window, running immediately then scheduling next day")
+            check_and_send_notifications()
+        else:
+            LOGGER.info("Already ran today, scheduling for next day")
+    else:
+        LOGGER.info("Outside window, scheduling for next occurrence")
+
+    schedule_next_run()
 
     def enqueue_weekly_blocked_recheck() -> None:
         message = format_admin_operation(RECHECK_BLOCKED_USERS)
