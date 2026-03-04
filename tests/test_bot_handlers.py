@@ -172,6 +172,9 @@ class FakeEventFetcher:
     def classify_city(self, location: str):
         return (True, location.strip().casefold())
 
+    def fetch_event_message(self, city: str, target_date):
+        return None
+
 
 def test_set_city_records_choice(monkeypatch, freezer):
     freezer.move_to(datetime(2026, 3, 4, 11, 0, tzinfo=ZoneInfo("Europe/Rome")))
@@ -268,6 +271,8 @@ def test_set_city_outside_window_skips_notification(monkeypatch, freezer):
     monkeypatch.setattr(bot, "db", fake_db)
     monkeypatch.setattr(bot, "EventFetcher", FakeEventFetcherWithEvents)
     monkeypatch.setattr(bot.config, "TIMEZONE_INFO", ZoneInfo("Europe/Rome"))
+    monkeypatch.setattr(bot.config, "NOTIFICATION_START_HOUR", 6)
+    monkeypatch.setattr(bot.config, "NOTIFICATION_END_HOUR", 8)
 
     update = _make_update(user_id=42, text="roma")
     asyncio.run(bot.set_city(update, SimpleNamespace()))

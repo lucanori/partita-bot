@@ -68,7 +68,6 @@ def process_notifications(
 
             if not message:
                 summary["no_events"] += 1
-                notified_users_today.add(user.telegram_id)
                 continue
 
             if not queue_message(user.telegram_id, message):
