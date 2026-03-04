@@ -11,6 +11,8 @@ supporting_docs: []
 - Corrected the morning scheduler interval calculation to schedule the next run for the same day when the bot starts before the notification window, and only shift to the next day when past the window.
 - Extracted the interval logic into a testable function and added unit coverage for before-window, in-window, and after-window scenarios.
 - Made notification hours configurable via environment variables (NOTIFICATION_START_HOUR, NOTIFICATION_END_HOUR) with validation and safe fallbacks to defaults.
+- Switched scheduler to a single daily run at window start (deep sleep outside the window) and added onboarding send when a user sets cities within the notification window.
+- Hardened container/runtime: Dockerfile runs as non-root (uid/gid 1000) and docker-compose applies no-new-privileges, cap_drop ALL, read-only rootfs with tmpfs /tmp, and non-root user.
 
 # Technical reasoning
 
@@ -25,6 +27,7 @@ supporting_docs: []
 - No behavior change for in-window cadence or post-window scheduling; weekly blocked-user job untouched.
 - Queue processing and notification deduplication remain unchanged.
 - Operators can test different notification windows via compose overrides without code changes; invalid values fall back to defaults to avoid outages.
+- New onboarding send ensures users who register during the window get same-day notifications; deep sleep reduces CPU outside the window; container now runs least-privileged.
 
 # Validation steps
 
