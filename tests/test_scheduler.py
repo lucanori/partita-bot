@@ -2,6 +2,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from partita_bot.notifications import process_notifications
+from partita_bot.scheduler import calculate_next_interval
 from partita_bot.storage import Database
 
 
@@ -154,3 +155,39 @@ def test_process_notifications_notifies_once_per_user_multiple_cities():
         assert len(fetcher.calls) == 2
         queued = db.get_pending_messages()
         assert len(queued) == 1
+
+
+def test_calculate_next_interval_before_window_schedules_same_day():
+    current_utc = datetime(2026, 3, 4, 2, 12, tzinfo=ZoneInfo("UTC"))
+    start_hour = 8
+    end_hour = 10
+    timezone = ZoneInfo("UTC")
+
+    result = calculate_next_interval(current_utc, start_hour, end_hour, timezone)
+
+    expected_seconds = (8 - 2) * 3600 - 12 * 60
+    assert result == expected_seconds
+
+
+def test_calculate_next_interval_inside_window_returns_900s():
+    current_utc = datetime(2026, 3, 4, 8, 30, tzinfo=ZoneInfo("UTC"))
+    start_hour = 8
+    end_hour = 10
+    timezone = ZoneInfo("UTC")
+
+    result = calculate_next_interval(current_utc, start_hour, end_hour, timezone)
+
+    assert result == 900
+
+
+def test_calculate_next_interval_after_window_schedules_next_day():
+    current_utc = datetime(2026, 3, 4, 11, 0, tzinfo=ZoneInfo("UTC"))
+    start_hour = 8
+    end_hour = 10
+    timezone = ZoneInfo("UTC")
+
+    result = calculate_next_interval(current_utc, start_hour, end_hour, timezone)
+
+    tomorrow = datetime(2026, 3, 5, 8, 0, tzinfo=ZoneInfo("UTC"))
+    expected_seconds = (tomorrow - current_utc).total_seconds()
+    assert result == expected_seconds

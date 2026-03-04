@@ -19,6 +19,39 @@ scheduler_logger.setLevel(logging.DEBUG if config.DEBUG else logging.WARNING)
 TIMEZONE = config.TIMEZONE_INFO
 
 
+def calculate_next_interval(
+    current_utc: datetime,
+    start_hour: int,
+    end_hour: int,
+    timezone: ZoneInfo,
+) -> float:
+    local_time = current_utc.astimezone(timezone)
+
+    if start_hour <= local_time.hour < end_hour:
+        return 15 * 60
+
+    if local_time.hour < start_hour:
+        next_run = datetime(
+            year=local_time.year,
+            month=local_time.month,
+            day=local_time.day,
+            hour=start_hour,
+            tzinfo=timezone,
+        ).astimezone(ZoneInfo("UTC"))
+    else:
+        tomorrow = local_time.date() + timedelta(days=1)
+        next_run = datetime(
+            year=tomorrow.year,
+            month=tomorrow.month,
+            day=tomorrow.day,
+            hour=start_hour,
+            tzinfo=timezone,
+        ).astimezone(ZoneInfo("UTC"))
+
+    seconds_until_next = (next_run - current_utc).total_seconds()
+    return max(seconds_until_next, 15 * 60)
+
+
 def create_scheduler() -> MatchScheduler:
     db = Database()
     fetcher = EventFetcher(db)
@@ -29,25 +62,6 @@ def create_scheduler() -> MatchScheduler:
             "coalesce": True,
         },
     )
-
-    def calculate_next_interval() -> float:
-        current_utc = datetime.now(tz=ZoneInfo("UTC"))
-        local_time = current_utc.astimezone(TIMEZONE)
-
-        if config.NOTIFICATION_START_HOUR <= local_time.hour < config.NOTIFICATION_END_HOUR:
-            return 15 * 60
-
-        tomorrow = local_time.date() + timedelta(days=1)
-        next_run = datetime(
-            year=tomorrow.year,
-            month=tomorrow.month,
-            day=tomorrow.day,
-            hour=config.NOTIFICATION_START_HOUR,
-            tzinfo=TIMEZONE,
-        ).astimezone(ZoneInfo("UTC"))
-
-        seconds_until_next = (next_run - current_utc).total_seconds()
-        return max(seconds_until_next, 15 * 60)
 
     def check_and_send_notifications() -> None:
         current_utc = datetime.now(tz=ZoneInfo("UTC"))
@@ -87,7 +101,13 @@ def create_scheduler() -> MatchScheduler:
 
     def dynamic_schedule() -> None:
         check_and_send_notifications()
-        interval = calculate_next_interval()
+        current_utc = datetime.now(tz=ZoneInfo("UTC"))
+        interval = calculate_next_interval(
+            current_utc=current_utc,
+            start_hour=config.NOTIFICATION_START_HOUR,
+            end_hour=config.NOTIFICATION_END_HOUR,
+            timezone=TIMEZONE,
+        )
         scheduler.add_job(
             dynamic_schedule,
             "date",
