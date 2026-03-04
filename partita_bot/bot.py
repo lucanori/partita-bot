@@ -26,14 +26,15 @@ WAITING_FOR_CITY = 1
 
 MSG_UNAUTHORIZED = "Mi dispiace, non hai accesso a questo bot. Contatta l'amministratore."
 MSG_WELCOME_NEW = (
-    "Benvenuto! Per iniziare, usa il pulsante 'Imposta Città' per selezionare fino a 3 città."
+    "Benvenuto! Per iniziare, usa il pulsante 'Imposta città' per selezionare fino a 3 città."
 )
 MSG_WELCOME_BACK = (
     "Bentornato!\nLe tue città attuali: {cities}\n\nUsa il pulsante sotto per modificare le città."
 )
 MSG_CITY_PROMPT = "Invia fino a 3 città separate da virgola (solo città):"
 MSG_CITY_SET = (
-    "Ho impostato le tue città: {cities}\n"
+    "Ho impostato le tue città:\n"
+    "{cities}\n"
     "Riceverai notifiche ogni giorno tra le {start_hour}:00 e le {end_hour}:00 "
     "({timezone}) se ci sono eventi nelle tue città!"
 )
@@ -42,7 +43,7 @@ MSG_CITY_TOO_MANY = "Puoi impostare massimo 3 città. Riprova."
 
 
 def get_main_keyboard():
-    return ReplyKeyboardMarkup([["🏙 Imposta Città"]], resize_keyboard=True)
+    return ReplyKeyboardMarkup([["🏙 Imposta città"]], resize_keyboard=True)
 
 
 async def check_access(update: Update) -> bool:
@@ -132,7 +133,7 @@ async def set_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.add_user(user_id, username, raw_cities[0] if raw_cities else "")
     saved_cities = db.set_user_cities(user_id, validated_cities)
-    cities_display = ", ".join(c.title() for c in saved_cities)
+    cities_display = "\n".join(c.title() for c in saved_cities)
 
     logger.info(f"Setting cities for user {user_id}: {cities_display}")
 
@@ -167,6 +168,16 @@ async def show_keyboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def handle_general_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        await handle_unauthorized(update)
+        return
+
+    await update.message.reply_text(
+        "Usa il pulsante sotto per impostare la tua città.", reply_markup=get_main_keyboard()
+    )
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     error = context.error
     logger.error(f"Exception while handling an update: {error}", exc_info=context.error)
@@ -187,7 +198,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def create_conversation_handler():
     return ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex("^🏙 Imposta Città$"), start_city_input),
+            MessageHandler(filters.Regex("^🏙 Imposta città$"), start_city_input),
         ],
         states={
             WAITING_FOR_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_city)],
@@ -212,6 +223,10 @@ def run_bot(bot_instance=None):
 
     city_conv_handler = create_conversation_handler()
     bot_instance.app.add_handler(city_conv_handler)
+
+    bot_instance.app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_message)
+    )
 
     bot_instance.app.add_error_handler(error_handler)
     logger.info("Starting bot polling")
