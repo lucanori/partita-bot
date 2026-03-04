@@ -2,6 +2,7 @@ services:
   partita-bot:
     image: ghcr.io/lucanori/partita-bot:latest
     container_name: partita-bot
+    user: "1000:1000"
     restart: unless-stopped
     volumes:
       - ./data:/app/data
@@ -12,10 +13,18 @@ services:
       - BOT_COMMAND=python run_bot.py
       - NOTIFICATION_START_HOUR=8
       - NOTIFICATION_END_HOUR=10
-  
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
+    read_only: true
+    tmpfs:
+      - /tmp
+
   partita-admin:
     image: ghcr.io/lucanori/partita-bot:latest
     container_name: partita-admin
+    user: "1000:1000"
     restart: unless-stopped
     ports:
       - "${ADMIN_PORT:-5000}:5000"
@@ -26,3 +35,10 @@ services:
     environment:
       - SERVICE_TYPE=admin
       - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:${ADMIN_PORT:-5000} --access-logfile - --error-logfile - wsgi:application
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
+    read_only: true
+    tmpfs:
+      - /tmp

@@ -2,6 +2,9 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Create non-root user/group with uid/gid 1000
+RUN groupadd -r -g 1000 appuser && useradd -r -u 1000 -g appuser appuser
+
 # Copy only requirements.txt first to leverage Docker cache
 COPY requirements.txt .
 
@@ -10,6 +13,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
+
+# Create data directory and set ownership for non-root user
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
 
 # Create an entrypoint script to run the appropriate service
 RUN echo '#!/bin/bash\n\

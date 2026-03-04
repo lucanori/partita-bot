@@ -2,6 +2,7 @@ services:
   partita-bot:
     build: .
     container_name: partita-bot-local
+    user: "1000:1000"
     restart: unless-stopped
     volumes:
       - ./data:/app/data
@@ -10,10 +11,18 @@ services:
     environment:
       - SERVICE_TYPE=bot
       - BOT_COMMAND=python run_bot.py
-  
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
+    read_only: true
+    tmpfs:
+      - /tmp
+
   partita-admin:
     build: .
     container_name: partita-admin-local
+    user: "1000:1000"
     restart: unless-stopped
     ports:
       - "${ADMIN_PORT:-5000}:5000"
@@ -24,3 +33,10 @@ services:
     environment:
       - SERVICE_TYPE=admin
       - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:${ADMIN_PORT:-5000} --access-logfile - --error-logfile - wsgi:application
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - "ALL"
+    read_only: true
+    tmpfs:
+      - /tmp
