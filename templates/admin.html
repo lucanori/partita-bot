@@ -43,6 +43,9 @@
         
         <div class="mode-selector">
             <div style="float: right;">
+                <span style="margin-right: 15px; font-weight: bold; color: #333;">
+                    Total Exa Cost: ${{ "%.4f"|format(total_cost) }}
+                </span>
                 <form method="POST" action="{{ url_for('notify_all') }}" style="display: inline-block; margin-right: 10px;">
                     <button type="submit" class="button test" style="background-color: #673ab7;">Notify All Users</button>
                 </form>

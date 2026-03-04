@@ -216,6 +216,7 @@ class EventFetcher:
             )
             response.raise_for_status()
             data = response.json()
+            self._record_cost_from_response(data, "answer")
             return self._extract_gate_payload(data)
         except requests.RequestException as exc:
             LOGGER.error("Exa Answer gate request failed: %s", exc)
@@ -249,6 +250,7 @@ class EventFetcher:
             )
             response.raise_for_status()
             data = response.json()
+            self._record_cost_from_response(data, "search")
             return self._extract_search_payload(data)
         except requests.RequestException as exc:
             LOGGER.error("Exa Search request failed: %s", exc)
@@ -321,6 +323,19 @@ class EventFetcher:
 
         return {"events": events}
 
+    def _record_cost_from_response(self, raw: Any, source: str) -> None:
+        if not isinstance(raw, dict):
+            return
+        cost_dollars = raw.get("costDollars")
+        if isinstance(cost_dollars, dict):
+            total = cost_dollars.get("total")
+            if isinstance(total, (int, float)):
+                self.db.record_exa_cost(source, float(total))
+            else:
+                self.db.record_exa_cost(source, 0.0)
+        else:
+            self.db.record_exa_cost(source, 0.0)
+
     def _format_event_message(
         self,
         city: str,
@@ -377,6 +392,7 @@ class EventFetcher:
             )
             response.raise_for_status()
             data = response.json()
+            self._record_cost_from_response(data, "answer")
             result = self._extract_classification_payload(data)
             if result is not None:
                 is_city = result.get("is_city", False)

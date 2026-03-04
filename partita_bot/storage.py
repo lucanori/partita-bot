@@ -121,6 +121,15 @@ class EventCache(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class ExaCost(Base):
+    __tablename__ = "exa_costs"
+
+    id = Column(Integer, primary_key=True)
+    source = Column(String, nullable=False)
+    cost = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=_utcnow)
+
+
 class Database:
     def __init__(self, database_url: str | None = None):
         if database_url:
@@ -187,6 +196,8 @@ class Database:
                             "ADD COLUMN canonical_name VARCHAR DEFAULT ''"
                         )
                     )
+        if not inspector.has_table("exa_costs"):
+            ExaCost.__table__.create(self.engine)
 
     @staticmethod
     def normalize_city(city: str) -> str:
@@ -698,3 +709,27 @@ class Database:
             "still_blocked": still_blocked,
             "errors": errors,
         }
+
+    def record_exa_cost(self, source: str, cost: float) -> None:
+        cost_microdollars = int(cost * 1_000_000)
+        entry = ExaCost(source=source, cost=cost_microdollars, created_at=self._get_utc_now())
+        self.session.add(entry)
+        self.session.commit()
+
+    def get_total_exa_cost(self) -> float:
+        from sqlalchemy import func
+
+        result = self.session.query(func.sum(ExaCost.cost)).scalar()
+        if result is None:
+            return 0.0
+        return result / 1_000_000
+
+    def get_exa_cost_by_source(self) -> dict[str, float]:
+        from sqlalchemy import func
+
+        results = (
+            self.session.query(ExaCost.source, func.sum(ExaCost.cost))
+            .group_by(ExaCost.source)
+            .all()
+        )
+        return {source: total / 1_000_000 for source, total in results}

@@ -45,12 +45,14 @@ def verify_password(username, password):
 def index():
     access_mode = db.get_access_mode()
     all_users = db.get_all_users()
+    total_cost = db.get_total_exa_cost()
     return render_template(
         "admin.html",
         users=all_users,
         access_mode=access_mode,
         current_mode=access_mode,
         db=db,
+        total_cost=total_cost,
     )
 
 
