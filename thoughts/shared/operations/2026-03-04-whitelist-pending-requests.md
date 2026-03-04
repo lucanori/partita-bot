@@ -1,0 +1,6 @@
+- Admin UI mostra le richieste pendenti in whitelist mode con azioni di approvazione (aggiunge in whitelist) o dismiss.
+- Rate limiting per risposte non autorizzate: una sola risposta ogni 5 minuti per utente, con registrazione su DB.
+- L’admin template condiziona la sezione pending a `current_mode == 'whitelist'` per evitare rumore in blocklist.
+- Il rate limit usa una tabella dedicata `access_denial_log` e viene verificato via `should_send_denial` prima di rispondere; le richieste pending vengono comunque registrate in whitelist mode anche quando la risposta è soppressa.
+- Gli admin possono approvare/dismiss direttamente dalla dashboard; whitelist enforcement resta invariata.
+- Ridotto spam di risposte non autorizzate da utenti non ammessi (whitelist o blocklist) grazie al cooldown di 5 minuti.
