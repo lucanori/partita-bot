@@ -82,3 +82,94 @@ def test_bot_language_reload(monkeypatch):
         else:
             monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
         importlib.reload(config)
+
+
+def _reset_notification_hours(monkeypatch) -> None:
+    monkeypatch.delenv("NOTIFICATION_START_HOUR", raising=False)
+    monkeypatch.delenv("NOTIFICATION_END_HOUR", raising=False)
+    importlib.reload(config)
+
+
+def test_notification_hours_valid_override(monkeypatch):
+    previous_start = os.environ.get("NOTIFICATION_START_HOUR")
+    previous_end = os.environ.get("NOTIFICATION_END_HOUR")
+    previous_skip = os.environ.get("PARTITA_SKIP_DOTENV")
+    try:
+        monkeypatch.setenv("NOTIFICATION_START_HOUR", "6")
+        monkeypatch.setenv("NOTIFICATION_END_HOUR", "9")
+        monkeypatch.setenv("PARTITA_SKIP_DOTENV", "true")
+        importlib.reload(config)
+        assert config.NOTIFICATION_START_HOUR == 6
+        assert config.NOTIFICATION_END_HOUR == 9
+    finally:
+        if previous_start is None:
+            monkeypatch.delenv("NOTIFICATION_START_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_START_HOUR", previous_start)
+        if previous_end is None:
+            monkeypatch.delenv("NOTIFICATION_END_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_END_HOUR", previous_end)
+        if previous_skip is None:
+            monkeypatch.delenv("PARTITA_SKIP_DOTENV", raising=False)
+        else:
+            monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
+        importlib.reload(config)
+
+
+def test_notification_hours_invalid_out_of_range(monkeypatch, caplog):
+    previous_start = os.environ.get("NOTIFICATION_START_HOUR")
+    previous_end = os.environ.get("NOTIFICATION_END_HOUR")
+    previous_skip = os.environ.get("PARTITA_SKIP_DOTENV")
+    try:
+        monkeypatch.setenv("NOTIFICATION_START_HOUR", "25")
+        monkeypatch.setenv("NOTIFICATION_END_HOUR", "9")
+        monkeypatch.setenv("PARTITA_SKIP_DOTENV", "true")
+        caplog.set_level(logging.WARNING)
+        importlib.reload(config)
+        assert config.NOTIFICATION_START_HOUR == config.DEFAULT_START_HOUR
+        assert config.NOTIFICATION_END_HOUR == config.DEFAULT_END_HOUR
+        assert "out of range" in caplog.text
+    finally:
+        if previous_start is None:
+            monkeypatch.delenv("NOTIFICATION_START_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_START_HOUR", previous_start)
+        if previous_end is None:
+            monkeypatch.delenv("NOTIFICATION_END_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_END_HOUR", previous_end)
+        if previous_skip is None:
+            monkeypatch.delenv("PARTITA_SKIP_DOTENV", raising=False)
+        else:
+            monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
+        importlib.reload(config)
+
+
+def test_notification_hours_start_greater_than_or_equal_end(monkeypatch, caplog):
+    previous_start = os.environ.get("NOTIFICATION_START_HOUR")
+    previous_end = os.environ.get("NOTIFICATION_END_HOUR")
+    previous_skip = os.environ.get("PARTITA_SKIP_DOTENV")
+    try:
+        monkeypatch.setenv("NOTIFICATION_START_HOUR", "12")
+        monkeypatch.setenv("NOTIFICATION_END_HOUR", "10")
+        monkeypatch.setenv("PARTITA_SKIP_DOTENV", "true")
+        caplog.set_level(logging.WARNING)
+        importlib.reload(config)
+        assert config.NOTIFICATION_START_HOUR == config.DEFAULT_START_HOUR
+        assert config.NOTIFICATION_END_HOUR == config.DEFAULT_END_HOUR
+        assert ">=" in caplog.text or "Falling back" in caplog.text
+    finally:
+        if previous_start is None:
+            monkeypatch.delenv("NOTIFICATION_START_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_START_HOUR", previous_start)
+        if previous_end is None:
+            monkeypatch.delenv("NOTIFICATION_END_HOUR", raising=False)
+        else:
+            monkeypatch.setenv("NOTIFICATION_END_HOUR", previous_end)
+        if previous_skip is None:
+            monkeypatch.delenv("PARTITA_SKIP_DOTENV", raising=False)
+        else:
+            monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
+        importlib.reload(config)

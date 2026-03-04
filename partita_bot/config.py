@@ -14,8 +14,43 @@ if SKIP_DOTENV not in {"1", "true", "yes"}:
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 DEFAULT_TIMEZONE = "Europe/Rome"
 TIMEZONE = os.getenv("TIMEZONE", DEFAULT_TIMEZONE)
-NOTIFICATION_START_HOUR = 8
-NOTIFICATION_END_HOUR = 10
+
+DEFAULT_START_HOUR = 8
+DEFAULT_END_HOUR = 10
+
+
+def _parse_notification_hours() -> tuple[int, int]:
+    start_str = os.getenv("NOTIFICATION_START_HOUR")
+    end_str = os.getenv("NOTIFICATION_END_HOUR")
+
+    try:
+        start = int(start_str) if start_str is not None else DEFAULT_START_HOUR
+        end = int(end_str) if end_str is not None else DEFAULT_END_HOUR
+    except (ValueError, TypeError):
+        logger.warning(
+            f"Invalid NOTIFICATION_START_HOUR/NOTIFICATION_END_HOUR. "
+            f"Falling back to defaults ({DEFAULT_START_HOUR}, {DEFAULT_END_HOUR})"
+        )
+        return DEFAULT_START_HOUR, DEFAULT_END_HOUR
+
+    if not (0 <= start <= 23 and 0 <= end <= 23):
+        logger.warning(
+            f"NOTIFICATION_START_HOUR/NOTIFICATION_END_HOUR out of range (0-23). "
+            f"Falling back to defaults ({DEFAULT_START_HOUR}, {DEFAULT_END_HOUR})"
+        )
+        return DEFAULT_START_HOUR, DEFAULT_END_HOUR
+
+    if start >= end:
+        logger.warning(
+            f"NOTIFICATION_START_HOUR ({start}) >= NOTIFICATION_END_HOUR ({end}). "
+            f"Falling back to defaults ({DEFAULT_START_HOUR}, {DEFAULT_END_HOUR})"
+        )
+        return DEFAULT_START_HOUR, DEFAULT_END_HOUR
+
+    return start, end
+
+
+NOTIFICATION_START_HOUR, NOTIFICATION_END_HOUR = _parse_notification_hours()
 
 try:
     TIMEZONE_INFO = ZoneInfo(TIMEZONE)

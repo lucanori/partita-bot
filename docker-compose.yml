@@ -10,9 +10,8 @@ services:
     environment:
       - SERVICE_TYPE=bot
       - BOT_COMMAND=python run_bot.py
-    labels:
-      # Enable Watchtower, remove if not needed
-      - com.centurylinklabs.watchtower.enable=true
+      - NOTIFICATION_START_HOUR=8
+      - NOTIFICATION_END_HOUR=10
   
   partita-admin:
     image: ghcr.io/lucanori/partita-bot:latest
@@ -27,6 +26,3 @@ services:
     environment:
       - SERVICE_TYPE=admin
       - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:${ADMIN_PORT:-5000} --access-logfile - --error-logfile - wsgi:application
-    labels:
-      # Enable Watchtower, remove if not needed
-      - com.centurylinklabs.watchtower.enable=true
