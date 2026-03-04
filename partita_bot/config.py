@@ -16,7 +16,7 @@ DEFAULT_TIMEZONE = "Europe/Rome"
 TIMEZONE = os.getenv("TIMEZONE", DEFAULT_TIMEZONE)
 
 DEFAULT_START_HOUR = 8
-DEFAULT_END_HOUR = 10
+DEFAULT_END_HOUR = 20
 
 
 def _parse_notification_hours() -> tuple[int, int]:
