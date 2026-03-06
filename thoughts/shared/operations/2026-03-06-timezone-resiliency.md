@@ -24,6 +24,8 @@ supporting_docs:
 - Hardened Exa fetch path with retries/backoff, longer configurable timeouts, and explicit fetch-failure sentinel to prevent cache poisoning and lost daily runs.
 - Adjusted notification/scheduler flow to separate fetch errors from genuine “no events,” avoiding marking the day complete when upstream fetch fails.
 - Added SQLite datetime adapter to avoid Python 3.13 deprecation warnings while preserving offset-aware ISO formatting.
+- Fixed admin notify-user flow to drop `__FETCH_FAILURE__` responses instead of queuing them.
+- Added admin action “Clear Event Cache” to purge today’s event_cache entries for all configured cities, plus DB helpers to delete cache and list cities.
 - Expanded tests for timezone formatting, runtime timezone updates, resiliency around Exa timeouts, retry adapter configuration, and scheduler state initialization.
 
 ## Technical Reasoning
