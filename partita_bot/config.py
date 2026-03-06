@@ -73,13 +73,15 @@ def set_timezone(tz_name: str) -> None:
         TIMEZONE_INFO = ZoneInfo(DEFAULT_TIMEZONE)
 
 
-def timezone_converter(timestamp: float | datetime | None = None) -> datetime:
+def timezone_converter(timestamp: float | int | datetime | None = None) -> datetime:
     if timestamp is None:
         dt = datetime.now(tz=ZoneInfo("UTC"))
     elif isinstance(timestamp, (int, float)):
         dt = datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC"))
-    else:
+    elif isinstance(timestamp, datetime):
         dt = timestamp
+    else:
+        dt = datetime.now(tz=ZoneInfo("UTC"))
     return dt.astimezone(TIMEZONE_INFO)
 
 

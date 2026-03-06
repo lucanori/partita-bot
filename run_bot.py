@@ -25,9 +25,13 @@ logging.basicConfig(
     level=logging_level,
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logging.Formatter.converter = lambda *args: config.timezone_converter(
-    args[0] if args else None
-).timetuple()
+
+
+def _log_converter(seconds: float | None) -> time.struct_time:
+    return config.timezone_converter(seconds).timetuple()
+
+
+logging.Formatter.converter = staticmethod(_log_converter)
 logger = logging.getLogger(__name__)
 
 
