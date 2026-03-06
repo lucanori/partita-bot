@@ -4,6 +4,7 @@ import pytest
 
 import partita_bot.admin as admin_module
 import partita_bot.config as config
+from partita_bot.event_fetcher import FETCH_FAILURE
 from partita_bot.storage import AccessControl, Database
 
 
@@ -15,10 +16,13 @@ def auth_header() -> dict[str, str]:
 class DummyFetcher:
     def __init__(self):
         self.calls: list[str] = []
+        self.return_value: str | None = "Evento per {city}"
 
-    def fetch_event_message(self, city: str, target_date) -> str:
+    def fetch_event_message(self, city: str, target_date) -> str | None:
         self.calls.append(city)
-        return f"Evento per {city}"
+        if self.return_value is None:
+            return None
+        return self.return_value.format(city=city)
 
 
 @pytest.fixture
@@ -358,3 +362,45 @@ def test_index_no_pending_requests_in_blocklist_mode(admin_test_env):
         html = response.get_data(as_text=True)
 
     assert "Pending Whitelist Requests" not in html
+
+
+def test_notify_user_skips_fetch_failure(admin_test_env):
+    admin_app, db, fetcher = admin_test_env
+    db.add_user(1, "alice", "Roma")
+    db.set_user_cities(1, ["roma"])
+    fetcher.return_value = FETCH_FAILURE
+
+    with admin_app.app.test_client() as client:
+        response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
+        assert response.status_code == 200
+
+    assert fetcher.calls == ["roma"]
+    queued = db.get_pending_messages()
+    assert len(queued) == 0
+    user = db.get_user(1)
+    assert user is not None
+    assert user.last_manual_notification is None
+
+
+def test_clear_event_cache_clears_today_for_all_cities(admin_test_env):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    admin_app, db, _ = admin_test_env
+    db.add_user(1, "alice", "Roma")
+    db.add_user(2, "bob", "Milano")
+    db.set_user_cities(1, ["roma"])
+    db.set_user_cities(2, ["milano"])
+
+    today = datetime.now(ZoneInfo("Europe/Rome")).date()
+    db.save_event_cache("roma", today, "yes", [{"title": "Test"}])
+    db.save_event_cache("milano", today, "yes", [{"title": "Test"}])
+
+    with admin_app.app.test_client() as client:
+        response = client.post("/clear_event_cache", headers=auth_header(), follow_redirects=True)
+        assert response.status_code == 200
+
+    cached_roma = db.get_event_cache("roma", today)
+    cached_milano = db.get_event_cache("milano", today)
+    assert cached_roma is None
+    assert cached_milano is None
