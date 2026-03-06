@@ -114,7 +114,7 @@ def test_classify_city_returns_empty_canonical_for_non_city(monkeypatch):
 
 def test_classification_cache_ttl_expiration(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
-        old_time = datetime.now(tz=ZoneInfo("UTC")) - timedelta(days=366)
+        old_time = datetime.now(tz=ZoneInfo("UTC")) - timedelta(days=731)
         cache_entry = CityClassificationCache(
             normalized_name="roma",
             is_city=True,

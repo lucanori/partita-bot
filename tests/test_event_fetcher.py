@@ -36,22 +36,34 @@ class MockSession:
         self.call_index = 0
 
     def post(self, url: str, headers=None, json=None, timeout=None):
-        self.calls.append({"url": url, "json": json, "headers": headers})
+        self.calls.append({"url": url, "json": json, "headers": headers, "method": "post"})
         if self.call_index < len(self.responses):
             response = self.responses[self.call_index]
             self.call_index += 1
             return response
         return DummyResponse({})
 
+    def get(self, url: str, headers=None, params=None, timeout=None):
+        self.calls.append({"url": url, "params": params, "headers": headers, "method": "get"})
+        if self.call_index < len(self.responses):
+            response = self.responses[self.call_index]
+            self.call_index += 1
+            return response
+        return DummyResponse({"matches": []})
+
 
 class FailingSession:
     def post(self, *args, **kwargs):
         raise AssertionError("Exa should not be invoked when cache is fresh")
 
+    def get(self, *args, **kwargs):
+        raise AssertionError("Football-data should not be invoked when cache is fresh")
+
 
 def test_event_fetcher_gate_no_no_search_call(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "no"}}
         session = MockSession(
             [
@@ -80,6 +92,7 @@ def test_event_fetcher_gate_no_no_search_call(monkeypatch):
 def test_event_fetcher_gate_yes_search_called_with_links(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "yes"}}
         search_payload = {
             "output": {
@@ -252,6 +265,7 @@ def test_search_filters_missing_source_url(monkeypatch):
 
 def test_cache_revalidation_filters_legacy_events(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         target_date = date(2026, 3, 2)
         legacy_events = [
             {
@@ -294,6 +308,7 @@ def test_cache_revalidation_filters_legacy_events(monkeypatch):
 
 def test_cache_revalidation_returns_none_when_all_legacy_invalid(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         target_date = date(2026, 3, 2)
         legacy_events = [
             {
@@ -338,6 +353,7 @@ def test_city_classification_prompt_prefers_city_country_format(monkeypatch):
 
 def test_event_fetcher_uses_cache_before_calling_api(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         target_date = date(2026, 3, 2)
         db.save_event_cache(
             "Roma",
@@ -549,6 +565,7 @@ def test_event_matches_city_multi_token_city_core():
 def test_search_payload_uses_deep_type(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "yes"}}
         search_payload = {"output": {"events": []}}
         session = MockSession(
@@ -819,6 +836,7 @@ def test_fetch_single_flow_returns_error_on_search_failure(monkeypatch):
 def test_fetch_event_message_returns_failure_when_both_flows_error(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
 
         class AlwaysFailSession:
             def post(self, *args, **kwargs):
@@ -834,6 +852,7 @@ def test_fetch_event_message_returns_failure_when_both_flows_error(monkeypatch):
 def test_fetch_event_message_returns_events_when_one_flow_succeeds(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "yes"}}
         search_payload = {
             "output": {
@@ -893,6 +912,7 @@ def test_fetch_event_message_returns_none_when_both_no_events(monkeypatch):
 
 def test_football_and_general_cache_isolation(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         target_date = date(2026, 3, 2)
 
         db.save_event_cache(

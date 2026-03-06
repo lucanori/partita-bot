@@ -101,17 +101,26 @@ class MockSession:
         self.call_index = 0
 
     def post(self, url: str, headers=None, json=None, timeout=None):
-        self.calls.append({"url": url, "json": json, "headers": headers})
+        self.calls.append({"url": url, "json": json, "headers": headers, "method": "post"})
         if self.call_index < len(self.responses):
             response = self.responses[self.call_index]
             self.call_index += 1
             return response
         return DummyResponse({})
 
+    def get(self, url: str, headers=None, params=None, timeout=None):
+        self.calls.append({"url": url, "params": params, "headers": headers, "method": "get"})
+        if self.call_index < len(self.responses):
+            response = self.responses[self.call_index]
+            self.call_index += 1
+            return response
+        return DummyResponse({"matches": []})
+
 
 def test_fetch_event_message_gate_timeout_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         session = TimeoutSession(fail_count=4)
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
@@ -130,6 +139,7 @@ def test_fetch_event_message_gate_timeout_returns_fetch_failure(monkeypatch):
 def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
 
         class GateOkSearchTimeoutSession:
             def __init__(self):
@@ -161,6 +171,7 @@ def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
 def test_fetch_event_message_gate_no_caches_no(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         session = MockSession(
             [
                 DummyResponse({"answer": {"status": "no"}}),
@@ -186,6 +197,7 @@ def test_fetch_event_message_gate_no_caches_no(monkeypatch):
 def test_fetch_event_message_search_empty_after_filter_caches_no(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "yes"}}
         search_payload = {
             "output": {
@@ -413,6 +425,7 @@ def test_check_and_send_notifications_updates_last_run_when_notifications_sent(
 def test_manual_retry_session_eventual_success(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         session = RetryThenSuccessSession(gate_fail_count=0, search_fail_count=0)
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
@@ -484,6 +497,7 @@ def test_retry_adapter_configured_for_http_and_https():
 def test_partial_failure_one_flow_succeeds(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
         gate_payload = {"answer": {"status": "yes"}}
         search_payload = {
             "output": {
@@ -528,6 +542,7 @@ def test_partial_failure_one_flow_succeeds(monkeypatch):
 def test_both_flows_error_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
 
         class AlwaysFailSession:
             def post(self, *args, **kwargs):
