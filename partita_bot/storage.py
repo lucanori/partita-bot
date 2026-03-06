@@ -795,6 +795,28 @@ class Database:
             self.session.query(PendingAccessRequest).order_by(PendingAccessRequest.first_seen).all()
         )
 
+    def delete_event_cache(self, city: str, target_date: date | datetime) -> int:
+        from sqlalchemy import delete
+
+        normalized_city = self.normalize_city(city)
+        if not normalized_city:
+            return 0
+
+        if isinstance(target_date, datetime):
+            target_date = target_date.date()
+
+        date_key = target_date.isoformat()
+        stmt = delete(EventCache).where(
+            EventCache.city == normalized_city, EventCache.date == date_key
+        )
+        result = self.session.execute(stmt)
+        self.session.commit()
+        return result.rowcount
+
+    def get_all_cities_with_users(self) -> list[str]:
+        cities = self.session.query(UserCity.city).distinct().all()
+        return [c[0] for c in cities]
+
     def should_send_denial(self, telegram_id: int, cooldown_seconds: int = 300) -> bool:
         now = self._get_utc_now()
         entry = self.session.query(AccessDenialLog).filter_by(telegram_id=telegram_id).first()
