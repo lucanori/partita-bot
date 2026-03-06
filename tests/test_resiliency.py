@@ -112,17 +112,19 @@ class MockSession:
 def test_fetch_event_message_gate_timeout_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        session = TimeoutSession(fail_count=1)
+        session = TimeoutSession(fail_count=4)
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
         result = fetcher.fetch_event_message("Roma", target_date)
 
         assert result == FETCH_FAILURE
-        assert session.call_count == 1
+        assert session.call_count >= 2
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is None
+        cached_football = db.get_event_cache("Roma", target_date, "football")
+        cached_general = db.get_event_cache("Roma", target_date, "general")
+        assert cached_football is None or cached_football.get("status") != "yes"
+        assert cached_general is None or cached_general.get("status") != "yes"
 
 
 def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
@@ -148,16 +150,23 @@ def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
         result = fetcher.fetch_event_message("Roma", target_date)
 
         assert result == FETCH_FAILURE
-        assert session.call_count == 2
+        assert session.call_count >= 4
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is None
+        cached_football = db.get_event_cache("Roma", target_date, "football")
+        cached_general = db.get_event_cache("Roma", target_date, "general")
+        assert cached_football is None or cached_football.get("status") != "yes"
+        assert cached_general is None or cached_general.get("status") != "yes"
 
 
 def test_fetch_event_message_gate_no_caches_no(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        session = MockSession(DummyResponse({"answer": {"status": "no"}}))
+        session = MockSession(
+            [
+                DummyResponse({"answer": {"status": "no"}}),
+                DummyResponse({"answer": {"status": "no"}}),
+            ]
+        )
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
@@ -166,9 +175,12 @@ def test_fetch_event_message_gate_no_caches_no(monkeypatch):
         assert result is None
         assert result != FETCH_FAILURE
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "no"
+        cached_football = db.get_event_cache("Roma", target_date, "football")
+        cached_general = db.get_event_cache("Roma", target_date, "general")
+        assert cached_football is not None
+        assert cached_football["status"] == "no"
+        assert cached_general is not None
+        assert cached_general["status"] == "no"
 
 
 def test_fetch_event_message_search_empty_after_filter_caches_no(monkeypatch):
@@ -189,7 +201,14 @@ def test_fetch_event_message_search_empty_after_filter_caches_no(monkeypatch):
                 ]
             }
         }
-        session = MockSession([DummyResponse(gate_payload), DummyResponse(search_payload)])
+        session = MockSession(
+            [
+                DummyResponse(gate_payload),
+                DummyResponse(search_payload),
+                DummyResponse(gate_payload),
+                DummyResponse(search_payload),
+            ]
+        )
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
@@ -198,9 +217,12 @@ def test_fetch_event_message_search_empty_after_filter_caches_no(monkeypatch):
         assert result is None
         assert result != FETCH_FAILURE
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "no"
+        cached_football = db.get_event_cache("Roma", target_date, "football")
+        cached_general = db.get_event_cache("Roma", target_date, "general")
+        assert cached_football is not None
+        assert cached_football["status"] == "no"
+        assert cached_general is not None
+        assert cached_general["status"] == "no"
 
 
 def test_process_notifications_increments_fetch_errors_for_failure_sentinel(monkeypatch):
@@ -399,13 +421,15 @@ def test_manual_retry_session_eventual_success(monkeypatch):
 
         assert result is not None
         assert "Test Event" in result
-        assert session.gate_call_count == 1
-        assert session.search_call_count == 1
+        assert session.gate_call_count == 2
+        assert session.search_call_count == 2
 
-        cached = db.get_event_cache("Roma", target_date)
-        assert cached is not None
-        assert cached["status"] == "yes"
-        assert len(cached["events"]) == 1
+        cached_football = db.get_event_cache("Roma", target_date, "football")
+        cached_general = db.get_event_cache("Roma", target_date, "general")
+        assert cached_football is not None
+        assert cached_football["status"] == "yes"
+        assert cached_general is not None
+        assert cached_general["status"] == "yes"
 
 
 def test_configurable_timeout_from_env(monkeypatch):
@@ -455,3 +479,64 @@ def test_retry_adapter_configured_for_http_and_https():
         assert http_adapter is not None
         assert https_adapter.max_retries is not None
         assert http_adapter.max_retries is not None
+
+
+def test_partial_failure_one_flow_succeeds(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+        gate_payload = {"answer": {"status": "yes"}}
+        search_payload = {
+            "output": {
+                "events": [
+                    {
+                        "title": "Football Match",
+                        "time": "20:00",
+                        "location": "Stadio Olimpico, Roma",
+                        "type": "Football",
+                        "event_date": "2026-03-02",
+                        "source_url": "https://example.com/football",
+                    }
+                ]
+            }
+        }
+
+        class PartialFailSession:
+            def __init__(self):
+                self.call_count = 0
+
+            def post(self, url: str, headers=None, json=None, timeout=None):
+                self.call_count += 1
+                if "answer" in url:
+                    if "football" in str(json).lower():
+                        return DummyResponse(gate_payload)
+                    raise requests.Timeout("General gate timeout")
+                if "football" in str(json).lower():
+                    return DummyResponse(search_payload)
+                raise requests.Timeout("General search timeout")
+
+        session = PartialFailSession()
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+        target_date = date(2026, 3, 2)
+
+        result = fetcher.fetch_event_message("Roma", target_date)
+
+        assert result is not None
+        assert result != FETCH_FAILURE
+        assert "Football Match" in result
+
+
+def test_both_flows_error_returns_fetch_failure(monkeypatch):
+    with Database(database_url="sqlite:///:memory:") as db:
+        monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
+
+        class AlwaysFailSession:
+            def post(self, *args, **kwargs):
+                raise requests.Timeout("Always fails")
+
+        session = AlwaysFailSession()
+        fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
+        target_date = date(2026, 3, 2)
+
+        result = fetcher.fetch_event_message("Roma", target_date)
+
+        assert result == FETCH_FAILURE

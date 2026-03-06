@@ -120,11 +120,14 @@ class CityClassificationCache(Base):
 
 class EventCache(Base):
     __tablename__ = "event_cache"
-    __table_args__ = (UniqueConstraint("city", "date", name="uq_event_cache_city_date"),)
+    __table_args__ = (
+        UniqueConstraint("city", "date", "query_type", name="uq_event_cache_city_date_type"),
+    )
 
     id = Column(Integer, primary_key=True)
     city = Column(String, nullable=False)
     date = Column(String, nullable=False)
+    query_type = Column(String, nullable=False, default="general")
     status = Column(String, nullable=False)
     events = Column(Text, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
@@ -209,6 +212,23 @@ class Database:
                 conn.execute(text("INSERT INTO scheduler_state (id) VALUES (1)"))
         if not inspector.has_table("event_cache"):
             EventCache.__table__.create(self.engine)
+        else:
+            event_cache_columns = [
+                col["name"] for col in inspector.get_columns(EventCache.__tablename__)
+            ]
+            if "query_type" not in event_cache_columns:
+                with self.engine.connect() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE event_cache ADD COLUMN query_type VARCHAR "
+                            "DEFAULT 'general'"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE event_cache SET query_type = 'general' WHERE query_type IS NULL"
+                        )
+                    )
         if not inspector.has_table("user_cities"):
             UserCity.__table__.create(self.engine)
             self._migrate_single_city_to_multi()
@@ -442,7 +462,9 @@ class Database:
                 return tz_run
         return None
 
-    def get_event_cache(self, city: str, target_date: date | datetime) -> dict[str, Any] | None:
+    def get_event_cache(
+        self, city: str, target_date: date | datetime, query_type: str = "general"
+    ) -> dict[str, Any] | None:
         normalized_city = self.normalize_city(city)
         if not normalized_city:
             return None
@@ -452,7 +474,9 @@ class Database:
 
         date_key = target_date.isoformat()
         entry = (
-            self.session.query(EventCache).filter_by(city=normalized_city, date=date_key).first()
+            self.session.query(EventCache)
+            .filter_by(city=normalized_city, date=date_key, query_type=query_type)
+            .first()
         )
 
         if not entry:
@@ -475,6 +499,7 @@ class Database:
         target_date: date | datetime,
         status: str,
         events: list[dict[str, Any]] | None = None,
+        query_type: str = "general",
     ) -> None:
         normalized_city = self.normalize_city(city)
         if not normalized_city:
@@ -485,7 +510,9 @@ class Database:
 
         date_key = target_date.isoformat()
         existing = (
-            self.session.query(EventCache).filter_by(city=normalized_city, date=date_key).first()
+            self.session.query(EventCache)
+            .filter_by(city=normalized_city, date=date_key, query_type=query_type)
+            .first()
         )
 
         payload = json.dumps(events or [], ensure_ascii=False)
@@ -495,7 +522,11 @@ class Database:
             existing.events = payload
         else:
             cache_entry = EventCache(
-                city=normalized_city, date=date_key, status=status, events=payload
+                city=normalized_city,
+                date=date_key,
+                query_type=query_type,
+                status=status,
+                events=payload,
             )
             self.session.add(cache_entry)
 

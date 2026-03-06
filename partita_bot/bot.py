@@ -16,8 +16,13 @@ from partita_bot.storage import Database, User
 
 logging_level = logging.DEBUG if config.DEBUG else logging.INFO
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging_level
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging_level,
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+logging.Formatter.converter = lambda *args: config.timezone_converter(
+    args[0] if args else None
+).timetuple()
 logger = logging.getLogger(__name__)
 
 httpx_logger = logging.getLogger("httpx")

@@ -17,6 +17,9 @@ EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 
 FETCH_FAILURE = "__FETCH_FAILURE__"
 
+QUERY_TYPE_FOOTBALL = "football"
+QUERY_TYPE_GENERAL = "general"
+
 GATE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -152,6 +155,74 @@ class EventFetcher:
             valid_events.append(event)
         return valid_events
 
+    def _dedup_key(self, event: dict[str, Any]) -> str:
+        source_url = event.get("source_url", "")
+        if source_url:
+            return source_url.lower().strip()
+        title = event.get("title", "").lower().strip()
+        event_date = event.get("event_date", "").lower().strip()
+        time = event.get("time", "").lower().strip()
+        return f"{title}|{event_date}|{time}"
+
+    def _merge_and_dedupe(
+        self, football_events: list[dict[str, Any]], general_events: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        merged: list[dict[str, Any]] = []
+        for event in football_events + general_events:
+            key = self._dedup_key(event)
+            if key not in seen:
+                seen.add(key)
+                merged.append(event)
+        return merged
+
+    def _fetch_single_flow(
+        self,
+        city: str,
+        target_date: date,
+        query_type: str,
+        gate_query_override: str | None = None,
+        search_query_override: str | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        cached = self.db.get_event_cache(city, target_date, query_type)
+        if cached:
+            status = str(cached.get("status", "")).lower()
+            events = cached.get("events") or []
+            if status == "yes" and events:
+                valid_events = self._filter_events(events, target_date, city)
+                if valid_events:
+                    if len(valid_events) != len(events):
+                        self.db.save_event_cache(city, target_date, "yes", valid_events, query_type)
+                    return ("yes", valid_events)
+                self.db.save_event_cache(city, target_date, "no", [], query_type)
+                return ("no", [])
+            return (status, events)
+
+        gate_result = self._call_exa_gate(city, target_date, gate_query_override)
+        if gate_result is None:
+            return ("error", [])
+
+        gate_status = str(gate_result.get("status", "")).lower()
+
+        if gate_status != "yes":
+            self.db.save_event_cache(city, target_date, "no", [], query_type)
+            return ("no", [])
+
+        search_result = self._call_exa_search(city, target_date, search_query_override)
+        if search_result is None:
+            return ("error", [])
+
+        events = search_result.get("events") or []
+        valid_events = self._filter_events(events, target_date, city)
+
+        if not valid_events:
+            LOGGER.info("No valid events remain after filtering for %s on %s", city, target_date)
+            self.db.save_event_cache(city, target_date, "no", [], query_type)
+            return ("no", [])
+
+        self.db.save_event_cache(city, target_date, "yes", valid_events, query_type)
+        return ("yes", valid_events)
+
     def fetch_event_message(self, city: str, target_date: date | None = None) -> str | None:
         normalized_city = self.db.normalize_city(city)
         if not normalized_city:
@@ -160,61 +231,50 @@ class EventFetcher:
 
         target_date = target_date or datetime.now(config.TIMEZONE_INFO).date()
 
-        cached = self.db.get_event_cache(city, target_date)
-        if cached:
-            status = str(cached.get("status", "")).lower()
-            events = cached.get("events") or []
-            if status == "yes" and events:
-                valid_events = self._filter_events(events, target_date, city)
-                if not valid_events:
-                    LOGGER.info(
-                        "Cached events had no valid entries for date %s, updating cache",
-                        target_date,
-                    )
-                    self.db.save_event_cache(city, target_date, "no", [])
-                    return None
-                if len(valid_events) != len(events):
-                    LOGGER.info(
-                        "Filtered cached events from %d to %d valid entries",
-                        len(events),
-                        len(valid_events),
-                    )
-                    self.db.save_event_cache(city, target_date, "yes", valid_events)
-                return self._format_event_message(city, target_date, valid_events)
-            return None
+        football_status, football_events = self._fetch_single_flow(
+            city,
+            target_date,
+            QUERY_TYPE_FOOTBALL,
+            gate_query_override=self._build_football_gate_query(city, target_date),
+            search_query_override=self._build_football_search_query(city, target_date),
+        )
 
-        gate_result = self._call_exa_gate(city, target_date)
-        if gate_result is None:
+        general_status, general_events = self._fetch_single_flow(
+            city,
+            target_date,
+            QUERY_TYPE_GENERAL,
+            gate_query_override=self._build_general_gate_query(city, target_date),
+            search_query_override=self._build_general_search_query(city, target_date),
+        )
+
+        if football_status == "error" and general_status == "error":
             return FETCH_FAILURE
 
-        gate_status = str(gate_result.get("status", "")).lower()
+        if football_status == "error":
+            LOGGER.warning(
+                "Football flow failed for %s on %s, using general only", city, target_date
+            )
+        elif general_status == "error":
+            LOGGER.warning(
+                "General flow failed for %s on %s, using football only", city, target_date
+            )
 
-        if gate_status != "yes":
-            self.db.save_event_cache(city, target_date, "no", [])
+        all_events = self._merge_and_dedupe(football_events, general_events)
+
+        if not all_events:
             return None
 
-        search_result = self._call_exa_search(city, target_date)
-        if search_result is None:
-            return FETCH_FAILURE
+        return self._format_event_message(city, target_date, all_events)
 
-        events = search_result.get("events") or []
-        valid_events = self._filter_events(events, target_date, city)
-
-        if not valid_events:
-            LOGGER.info("No valid events remain after filtering for %s on %s", city, target_date)
-            self.db.save_event_cache(city, target_date, "no", [])
-            return None
-
-        self.db.save_event_cache(city, target_date, "yes", valid_events)
-        return self._format_event_message(city, target_date, valid_events)
-
-    def _call_exa_gate(self, city: str, target_date: date) -> dict[str, Any] | None:
+    def _call_exa_gate(
+        self, city: str, target_date: date, query_override: str | None = None
+    ) -> dict[str, Any] | None:
         if not config.EXA_API_KEY:
             LOGGER.error("Cannot query Exa Answer because EXA_API_KEY is missing")
             return None
 
         payload = {
-            "query": self._build_gate_query(city, target_date),
+            "query": query_override or self._build_general_gate_query(city, target_date),
             "outputSchema": GATE_OUTPUT_SCHEMA,
         }
         headers = {
@@ -246,13 +306,15 @@ class EventFetcher:
             LOGGER.error("Exa Answer gate response could not be decoded: %s", exc)
             return None
 
-    def _call_exa_search(self, city: str, target_date: date) -> dict[str, Any] | None:
+    def _call_exa_search(
+        self, city: str, target_date: date, query_override: str | None = None
+    ) -> dict[str, Any] | None:
         if not config.EXA_API_KEY:
             LOGGER.error("Cannot query Exa Search because EXA_API_KEY is missing")
             return None
 
         payload = {
-            "query": self._build_search_query(city, target_date),
+            "query": query_override or self._build_general_search_query(city, target_date),
             "useAutoprompt": True,
             "type": "deep",
             "outputSchema": SEARCH_OUTPUT_SCHEMA,
@@ -286,28 +348,57 @@ class EventFetcher:
             LOGGER.error("Exa Search response could not be decoded: %s", exc)
             return None
 
-    def _build_gate_query(self, city: str, target_date: date) -> str:
+    def _build_general_gate_query(self, city: str, target_date: date) -> str:
         formatted_date = target_date.strftime("%d/%m/%Y")
         city_name = city.strip() or "the city"
         return (
-            f"On {formatted_date}, will there be a football match and/or other relevant events "
-            f"such as concerts, shows, etc. in the following city: {city_name}? "
+            f"On {formatted_date}, will there be any relevant events such as concerts, shows, "
+            f"cultural events, festivals, or other public gatherings in the following city: "
+            f"{city_name}? "
+            "Exclude football matches and sports events. "
             "Reply ONLY with status='yes' if there are confirmed events, otherwise status='no'. "
             "Do not include event details, only yes/no."
         )
 
-    def _build_search_query(self, city: str, target_date: date) -> str:
+    def _build_general_search_query(self, city: str, target_date: date) -> str:
         formatted_date = target_date.strftime("%d/%m/%Y")
         iso_date = target_date.isoformat()
         city_name = city.strip() or "the city"
         language = config.BOT_LANGUAGE
         return (
             f"Respond in {language}. "
-            f"Find sports events, concerts, shows and other relevant events "
+            f"Find concerts, shows, cultural events, festivals, and other relevant public events "
             f"in {city_name} on {formatted_date} ({iso_date}). "
+            "Exclude football matches and sports events. "
             "For each event, include: title, time, location, type, details, "
             f"event_date (format YYYY-MM-DD: {iso_date}), and source_url (source URL). "
             "Include ONLY events with confirmed date and valid source URL. "
+            "Return events in the 'events' field of the output schema."
+        )
+
+    def _build_football_gate_query(self, city: str, target_date: date) -> str:
+        formatted_date = target_date.strftime("%d/%m/%Y")
+        city_name = city.strip() or "the city"
+        return (
+            f"On {formatted_date}, will there be any football matches (soccer games) "
+            f"in the following city: {city_name}? "
+            "Reply ONLY with status='yes' if there are confirmed football matches, "
+            "otherwise status='no'. Do not include event details, only yes/no."
+        )
+
+    def _build_football_search_query(self, city: str, target_date: date) -> str:
+        formatted_date = target_date.strftime("%d/%m/%Y")
+        iso_date = target_date.isoformat()
+        city_name = city.strip() or "the city"
+        language = config.BOT_LANGUAGE
+        return (
+            f"Respond in {language}. "
+            f"Find football matches (soccer games) in {city_name} on {formatted_date} "
+            f"({iso_date}). "
+            "For each match, include: title (team names), time, location (stadium), "
+            "type (football/soccer), details (league/competition), "
+            f"event_date (format YYYY-MM-DD: {iso_date}), and source_url (source URL). "
+            "Include ONLY matches with confirmed date and valid source URL. "
             "Return events in the 'events' field of the output schema."
         )
 

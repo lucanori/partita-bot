@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
@@ -70,6 +71,16 @@ def set_timezone(tz_name: str) -> None:
         logger.warning(f"Invalid timezone: {tz_name}. Falling back to {DEFAULT_TIMEZONE}")
         TIMEZONE = DEFAULT_TIMEZONE
         TIMEZONE_INFO = ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def timezone_converter(timestamp: float | datetime | None = None) -> datetime:
+    if timestamp is None:
+        dt = datetime.now(tz=ZoneInfo("UTC"))
+    elif isinstance(timestamp, (int, float)):
+        dt = datetime.fromtimestamp(timestamp, tz=ZoneInfo("UTC"))
+    else:
+        dt = timestamp
+    return dt.astimezone(TIMEZONE_INFO)
 
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
