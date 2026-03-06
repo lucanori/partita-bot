@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
@@ -14,11 +14,13 @@ from partita_bot.storage import Database
 LOGGER = logging.getLogger(__name__)
 EXA_ANSWER_ENDPOINT = "https://api.exa.ai/answer"
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
+FOOTBALL_DATA_ENDPOINT = "http://api.football-data.org/v4/matches"
 
 FETCH_FAILURE = "__FETCH_FAILURE__"
 
 QUERY_TYPE_FOOTBALL = "football"
 QUERY_TYPE_GENERAL = "general"
+QUERY_TYPE_FOOTBALL_DATA = "football_data"
 
 GATE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -59,6 +61,15 @@ CITY_CLASSIFICATION_SCHEMA: dict[str, Any] = {
         "reason": {"type": "string"},
     },
     "required": ["is_city"],
+}
+
+TEAM_CITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "city": {"type": "string"},
+        "country": {"type": "string"},
+    },
+    "required": ["city"],
 }
 
 
@@ -123,6 +134,7 @@ class EventFetcher:
         events: list[dict[str, Any]],
         target_date: date,
         target_city: str,
+        require_source_url: bool = True,
     ) -> list[dict[str, Any]]:
         target_iso = target_date.isoformat()
         valid_events: list[dict[str, Any]] = []
@@ -142,7 +154,7 @@ class EventFetcher:
                 )
                 continue
             source_url = event.get("source_url")
-            if not source_url:
+            if require_source_url and not source_url:
                 LOGGER.debug("Filtering out event missing source_url: %s", event.get("title"))
                 continue
             if not self._event_matches_city(event, target_city):
@@ -175,6 +187,200 @@ class EventFetcher:
                 seen.add(key)
                 merged.append(event)
         return merged
+
+    def _fetch_football_data_matches(self, city: str, target_date: date) -> list[dict[str, Any]]:
+        if not config.FOOTBALL_API_TOKEN:
+            LOGGER.debug("FOOTBALL_API_TOKEN not set, skipping football-data.org fetch")
+            return []
+
+        cached = self.db.get_event_cache(city, target_date, QUERY_TYPE_FOOTBALL_DATA)
+        if cached:
+            events = cached.get("events") or []
+            valid_events = self._filter_events(events, target_date, city, require_source_url=False)
+            if cached.get("status") == "yes" and valid_events:
+                return valid_events
+            if cached.get("status") == "no":
+                return []
+
+        yesterday = target_date - timedelta(days=1)
+        tomorrow = target_date + timedelta(days=1)
+        params = {
+            "dateFrom": yesterday.isoformat(),
+            "dateTo": tomorrow.isoformat(),
+        }
+        headers = {"X-Auth-Token": config.FOOTBALL_API_TOKEN}
+
+        try:
+            response = self.session.get(
+                FOOTBALL_DATA_ENDPOINT,
+                headers=headers,
+                params=params,
+                timeout=(5, config.EXA_HTTP_TIMEOUT),
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.Timeout as exc:
+            LOGGER.error("Football-data request timed out: %s", exc)
+            return []
+        except requests.ConnectionError as exc:
+            LOGGER.error("Football-data request connection error: %s", exc)
+            return []
+        except requests.RequestException as exc:
+            LOGGER.error("Football-data request failed: %s", exc)
+            return []
+        except ValueError as exc:
+            LOGGER.error("Football-data response could not be decoded: %s", exc)
+            return []
+
+        matches = data.get("matches", [])
+        events = self._convert_football_matches_to_events(matches, target_date, city)
+        valid_events = self._filter_events(events, target_date, city, require_source_url=False)
+
+        if valid_events:
+            self.db.save_event_cache(
+                city, target_date, "yes", valid_events, QUERY_TYPE_FOOTBALL_DATA
+            )
+        else:
+            self.db.save_event_cache(city, target_date, "no", [], QUERY_TYPE_FOOTBALL_DATA)
+
+        return valid_events
+
+    def _convert_football_matches_to_events(
+        self, matches: list[dict[str, Any]], target_date: date, target_city: str
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        target_city_normalized = self.db.normalize_city(target_city)
+
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+
+            home_team = match.get("homeTeam", {})
+            away_team = match.get("awayTeam", {})
+            home_team_name = home_team.get("name", "")
+            away_team_name = away_team.get("name", "")
+
+            if not home_team_name or not away_team_name:
+                continue
+
+            match_city = self._get_city_for_team(home_team_name)
+            if not match_city:
+                continue
+
+            match_city_normalized = self.db.normalize_city(match_city)
+            if match_city_normalized != target_city_normalized:
+                continue
+
+            utc_date_str = match.get("utcDate", "")
+            if not utc_date_str:
+                continue
+
+            try:
+                utc_dt = datetime.fromisoformat(utc_date_str.replace("Z", "+00:00"))
+                local_dt = utc_dt.astimezone(config.TIMEZONE_INFO)
+                match_date = local_dt.date()
+                match_time = local_dt.strftime("%H:%M")
+            except (ValueError, TypeError):
+                continue
+
+            if match_date != target_date:
+                continue
+
+            competition = match.get("competition", {})
+            competition_name = competition.get("name", "")
+            venue = match.get("venue", "")
+            match_id = match.get("id", "")
+
+            title = f"{home_team_name} vs {away_team_name}"
+            details = competition_name if competition_name else "Football Match"
+            source_url = f"https://www.football-data.org/matches/{match_id}" if match_id else ""
+
+            event = {
+                "title": title,
+                "time": match_time,
+                "location": venue if venue else home_team_name,
+                "type": "Football",
+                "details": details,
+                "event_date": match_date.isoformat(),
+                "source_url": source_url,
+            }
+            events.append(event)
+
+        return events
+
+    def _get_city_for_team(self, team_name: str) -> str | None:
+        cached_city = self.db.get_team_city(team_name)
+        if cached_city:
+            return cached_city
+
+        if not config.EXA_API_KEY:
+            LOGGER.debug("Cannot classify team city: EXA_API_KEY missing")
+            return None
+
+        city = self._classify_team_city(team_name)
+        if city:
+            self.db.set_team_city(team_name, city)
+        return city
+
+    def _classify_team_city(self, team_name: str) -> str | None:
+        payload = {
+            "query": self._build_team_city_query(team_name),
+            "outputSchema": TEAM_CITY_SCHEMA,
+        }
+        headers = {
+            "x-api-key": config.EXA_API_KEY,
+            "Content-Type": "application/json",
+        }
+        try:
+            response = self.session.post(
+                EXA_ANSWER_ENDPOINT,
+                headers=headers,
+                json=payload,
+                timeout=(5, config.EXA_HTTP_TIMEOUT),
+            )
+            response.raise_for_status()
+            data = response.json()
+            self._record_cost_from_response(data, "answer")
+            result = self._extract_team_city_payload(data)
+            if result:
+                return result.get("city")
+            return None
+        except requests.Timeout as exc:
+            LOGGER.error("Exa team city classification request timed out: %s", exc)
+            return None
+        except requests.ConnectionError as exc:
+            LOGGER.error("Exa team city classification request connection error: %s", exc)
+            return None
+        except requests.RequestException as exc:
+            LOGGER.error("Exa team city classification request failed: %s", exc)
+            return None
+        except ValueError as exc:
+            LOGGER.error("Exa team city classification response could not be decoded: %s", exc)
+            return None
+
+    def _build_team_city_query(self, team_name: str) -> str:
+        return (
+            f'What city is the football team "{team_name}" based in? '
+            "Respond with the city name in the 'city' field "
+            "and the country in the 'country' field. "
+            "Be specific: return the city where the team's home stadium is located."
+        )
+
+    def _extract_team_city_payload(self, raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            LOGGER.warning(
+                "Unexpected payload type from Exa team city classification: %s", type(raw)
+            )
+            return None
+        candidate = raw
+        for key in ("answer", "output", "response", "data"):
+            if isinstance(candidate.get(key), dict):
+                candidate = candidate[key]
+                break
+        city = candidate.get("city", "")
+        if city:
+            return {"city": city, "country": candidate.get("country", "")}
+        return None
 
     def _fetch_single_flow(
         self,
@@ -231,6 +437,8 @@ class EventFetcher:
 
         target_date = target_date or datetime.now(config.TIMEZONE_INFO).date()
 
+        football_data_events = self._fetch_football_data_matches(city, target_date)
+
         football_status, football_events = self._fetch_single_flow(
             city,
             target_date,
@@ -247,7 +455,9 @@ class EventFetcher:
             search_query_override=self._build_general_search_query(city, target_date),
         )
 
-        if football_status == "error" and general_status == "error":
+        has_football_data = len(football_data_events) > 0
+
+        if football_status == "error" and general_status == "error" and not has_football_data:
             return FETCH_FAILURE
 
         if football_status == "error":
@@ -259,7 +469,9 @@ class EventFetcher:
                 "General flow failed for %s on %s, using football only", city, target_date
             )
 
-        all_events = self._merge_and_dedupe(football_events, general_events)
+        all_events = self._merge_and_dedupe(
+            football_data_events, self._merge_and_dedupe(football_events, general_events)
+        )
 
         if not all_events:
             return None

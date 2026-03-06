@@ -93,6 +93,10 @@ EXA_API_KEY = os.getenv("EXA_API_KEY")
 if not EXA_API_KEY:
     logger.error("EXA_API_KEY is not set in environment variables")
 
+FOOTBALL_API_TOKEN = os.getenv("FOOTBALL_API_TOKEN")
+if not FOOTBALL_API_TOKEN:
+    logger.info("FOOTBALL_API_TOKEN is not set; football-data.org integration will be skipped")
+
 EXA_HTTP_TIMEOUT = int(os.getenv("EXA_HTTP_TIMEOUT", "30"))
 
 ADMIN_PORT = int(os.getenv("ADMIN_PORT", "5000"))

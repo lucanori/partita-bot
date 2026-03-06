@@ -118,6 +118,15 @@ class CityClassificationCache(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class TeamCityCache(Base):
+    __tablename__ = "team_city_cache"
+
+    id = Column(Integer, primary_key=True)
+    normalized_team_name = Column(String, unique=True, nullable=False)
+    city = Column(String, nullable=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+
 class EventCache(Base):
     __tablename__ = "event_cache"
     __table_args__ = (
@@ -280,6 +289,8 @@ class Database:
             PendingAccessRequest.__table__.create(self.engine)
         if not inspector.has_table("access_denial_log"):
             AccessDenialLog.__table__.create(self.engine)
+        if not inspector.has_table("team_city_cache"):
+            TeamCityCache.__table__.create(self.engine)
 
     @staticmethod
     def normalize_city(city: str) -> str:
@@ -335,7 +346,7 @@ class Database:
         )
         if not entry:
             return (None, "")
-        ttl_days = 365
+        ttl_days = 730
         cutoff = self._get_utc_now() - timedelta(days=ttl_days)
         created = self._ensure_timezone_aware(entry.created_at)
         if created and created < cutoff:
@@ -359,6 +370,39 @@ class Database:
                 normalized_name=normalized_name,
                 is_city=is_city,
                 canonical_name=canonical_name,
+                created_at=self._get_utc_now(),
+            )
+            self.session.add(entry)
+        self.session.commit()
+
+    def get_team_city(self, team_name: str) -> str | None:
+        normalized = self.normalize_city(team_name)
+        if not normalized:
+            return None
+        entry = self.session.query(TeamCityCache).filter_by(normalized_team_name=normalized).first()
+        if not entry:
+            return None
+        ttl_days = 730
+        cutoff = self._get_utc_now() - timedelta(days=ttl_days)
+        created = self._ensure_timezone_aware(entry.created_at)
+        if created and created < cutoff:
+            return None
+        return entry.city
+
+    def set_team_city(self, team_name: str, city: str) -> None:
+        normalized = self.normalize_city(team_name)
+        if not normalized:
+            return
+        existing = (
+            self.session.query(TeamCityCache).filter_by(normalized_team_name=normalized).first()
+        )
+        if existing:
+            existing.city = city
+            existing.created_at = self._get_utc_now()
+        else:
+            entry = TeamCityCache(
+                normalized_team_name=normalized,
+                city=city,
                 created_at=self._get_utc_now(),
             )
             self.session.add(entry)
