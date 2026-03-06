@@ -216,7 +216,35 @@ class Database:
             event_cache_columns = [
                 col["name"] for col in inspector.get_columns(EventCache.__tablename__)
             ]
-            if "query_type" not in event_cache_columns:
+            unique_defs = inspector.get_unique_constraints(EventCache.__tablename__)
+            has_query_type = "query_type" in event_cache_columns
+            has_query_type_unique = any(
+                set(constraint.get("column_names", [])) == {"city", "date", "query_type"}
+                for constraint in unique_defs
+            )
+
+            needs_rebuild = False
+
+            if not has_query_type:
+                needs_rebuild = True
+
+            if not needs_rebuild and not has_query_type_unique:
+                needs_rebuild = True
+
+            if needs_rebuild:
+                with self.engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE event_cache RENAME TO event_cache_old"))
+                    EventCache.__table__.create(self.engine)
+                    conn.execute(
+                        text(
+                            "INSERT OR IGNORE INTO event_cache (city, date, query_type, status, "
+                            "events, created_at) "
+                            "SELECT city, date, COALESCE(query_type, 'general'), status, events, "
+                            "created_at FROM event_cache_old"
+                        )
+                    )
+                    conn.execute(text("DROP TABLE event_cache_old"))
+            elif not has_query_type:
                 with self.engine.connect() as conn:
                     conn.execute(
                         text(
@@ -529,8 +557,19 @@ class Database:
                 events=payload,
             )
             self.session.add(cache_entry)
-
-        self.session.commit()
+        try:
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            existing = (
+                self.session.query(EventCache)
+                .filter_by(city=normalized_city, date=date_key, query_type=query_type)
+                .first()
+            )
+            if existing:
+                existing.status = status
+                existing.events = payload
+                self.session.commit()
 
     def queue_message(self, telegram_id: int, message: str) -> bool:
         try:
