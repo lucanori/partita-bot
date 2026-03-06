@@ -13,13 +13,14 @@ services:
     environment:
       - SERVICE_TYPE=bot
       - BOT_COMMAND=python run_bot.py
-      - DEBUG=true
+      - DEBUG=false
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - EXA_API_KEY=${EXA_API_KEY}
       - BOT_LANGUAGE=Italian # optional, default to English if not set
+      - TIMEZONE=Europe/Rome # optional, default to UTC if not set
+      # - EXA_HTTP_TIMEOUT=30 # optional, default to 30 if not set
       # - NOTIFICATION_START_HOUR=8 # optional, default to 8 if not set
       # - NOTIFICATION_END_HOUR=20 # optional, default to 20 if not set
-      # - TIMEZONE=Europe/Rome # optional, default to Europe/Rome if not set
 
   partita-admin:
     build: .
@@ -37,9 +38,12 @@ services:
     environment:
       - SERVICE_TYPE=admin
       - ADMIN_COMMAND=gunicorn --bind 0.0.0.0:5086 --access-logfile - --error-logfile - wsgi:application
-      - DEBUG=true
+      - DEBUG=false
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - EXA_API_KEY=${EXA_API_KEY}
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
-      # - TIMEZONE=Europe/Rome # optional, default to Europe/Rome if not set
+      - BOT_LANGUAGE=Italian # optional, default to English if not set
+      - TIMEZONE=Europe/Rome # optional, default to UTC if not set
+      # - EXA_HTTP_TIMEOUT=30 # optional, default to 30 if not set
