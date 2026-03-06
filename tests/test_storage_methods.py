@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import partita_bot.config as config
 from partita_bot.storage import Database
 
 
@@ -54,6 +55,38 @@ def test_format_last_notification(db):
     db.update_last_notification(5)
     formatted = db.format_last_notification(5)
     assert formatted != "Never"
+
+
+def test_format_last_notification_respects_config_timezone(db):
+    original_tz = config.TIMEZONE
+    original_tz_info = config.TIMEZONE_INFO
+    try:
+        config.set_timezone("America/New_York")
+        db.add_user(99, "timezone_test", "Roma")
+        utc_time = datetime(2026, 3, 6, 12, 0, 0, tzinfo=ZoneInfo("UTC"))
+        user = db.get_user(99)
+        user.last_notification = utc_time
+        db.session.commit()
+        formatted = db.format_last_notification(99)
+        assert "2026-03-06" in formatted
+        assert "07:00:00" in formatted
+    finally:
+        config.TIMEZONE = original_tz
+        config.TIMEZONE_INFO = original_tz_info
+
+
+def test_format_datetime_respects_config_timezone(db):
+    original_tz = config.TIMEZONE
+    original_tz_info = config.TIMEZONE_INFO
+    try:
+        config.set_timezone("Asia/Tokyo")
+        utc_time = datetime(2026, 3, 6, 12, 0, 0, tzinfo=ZoneInfo("UTC"))
+        formatted = db.format_datetime(utc_time)
+        assert "2026-03-06" in formatted
+        assert "21:00:00" in formatted
+    finally:
+        config.TIMEZONE = original_tz
+        config.TIMEZONE_INFO = original_tz_info
 
 
 def test_queue_message_lifecycle(db):

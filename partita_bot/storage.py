@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sqlite3
 from datetime import date, datetime, timedelta
 from types import TracebackType
 from typing import Any
@@ -20,14 +21,22 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+import partita_bot.config as config
+
 Base = declarative_base()
 
 UTC_ZONE = ZoneInfo("UTC")
-ROME_ZONE = ZoneInfo("Europe/Rome")
 
 
 def _utcnow() -> datetime:
     return datetime.now(tz=UTC_ZONE)
+
+
+def _adapt_datetime(dt: datetime) -> str:
+    return dt.isoformat()
+
+
+sqlite3.register_adapter(datetime, _adapt_datetime)
 
 
 def is_user_blocked_error(error_message: str | None) -> bool:
@@ -193,7 +202,10 @@ class Database:
 
         if not inspector.has_table("scheduler_state"):
             SchedulerState.__table__.create(self.engine)
-            with self.engine.begin() as conn:
+        with self.engine.begin() as conn:
+            result = conn.execute(text("SELECT COUNT(*) FROM scheduler_state"))
+            count = result.scalar()
+            if count == 0:
                 conn.execute(text("INSERT INTO scheduler_state (id) VALUES (1)"))
         if not inspector.has_table("event_cache"):
             EventCache.__table__.create(self.engine)
@@ -403,8 +415,8 @@ class Database:
             if tz_aware is None:
                 return "Never"
             assert tz_aware is not None
-            rome_time = tz_aware.astimezone(ROME_ZONE)
-            return rome_time.strftime("%Y-%m-%d %H:%M:%S")
+            local_time = tz_aware.astimezone(config.TIMEZONE_INFO)
+            return local_time.strftime("%Y-%m-%d %H:%M:%S")
         return "Never"
 
     def format_datetime(self, value: datetime | None) -> str:
@@ -413,7 +425,7 @@ class Database:
         tz_aware = self._ensure_timezone_aware(value)
         if not tz_aware:
             return "Never"
-        return tz_aware.astimezone(ROME_ZONE).strftime("%Y-%m-%d %H:%M:%S")
+        return tz_aware.astimezone(config.TIMEZONE_INFO).strftime("%Y-%m-%d %H:%M:%S")
 
     def update_scheduler_last_run(self):
         with self.engine.begin() as conn:

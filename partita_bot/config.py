@@ -10,9 +10,8 @@ SKIP_DOTENV = os.getenv("PARTITA_SKIP_DOTENV", "false").lower()
 if SKIP_DOTENV not in {"1", "true", "yes"}:
     load_dotenv()
 
-# Application settings
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
-DEFAULT_TIMEZONE = "Europe/Rome"
+DEFAULT_TIMEZONE = "UTC"
 TIMEZONE = os.getenv("TIMEZONE", DEFAULT_TIMEZONE)
 
 DEFAULT_START_HOUR = 8
@@ -59,6 +58,20 @@ except ZoneInfoNotFoundError:
     TIMEZONE = DEFAULT_TIMEZONE
     TIMEZONE_INFO = ZoneInfo(TIMEZONE)
 
+
+def set_timezone(tz_name: str) -> None:
+    global TIMEZONE, TIMEZONE_INFO
+    try:
+        new_tz = ZoneInfo(tz_name)
+        TIMEZONE = tz_name
+        TIMEZONE_INFO = new_tz
+        logger.info(f"Timezone set to {tz_name}")
+    except ZoneInfoNotFoundError:
+        logger.warning(f"Invalid timezone: {tz_name}. Falling back to {DEFAULT_TIMEZONE}")
+        TIMEZONE = DEFAULT_TIMEZONE
+        TIMEZONE_INFO = ZoneInfo(DEFAULT_TIMEZONE)
+
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN is not set in environment variables")
@@ -67,11 +80,11 @@ EXA_API_KEY = os.getenv("EXA_API_KEY")
 if not EXA_API_KEY:
     logger.error("EXA_API_KEY is not set in environment variables")
 
-# Admin interface settings
+EXA_HTTP_TIMEOUT = int(os.getenv("EXA_HTTP_TIMEOUT", "30"))
+
 ADMIN_PORT = int(os.getenv("ADMIN_PORT", "5000"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY") or os.urandom(24)
 
-# Bot language configuration (global, not per-user)
 BOT_LANGUAGE = os.getenv("BOT_LANGUAGE", "English")

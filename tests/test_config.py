@@ -173,3 +173,41 @@ def test_notification_hours_start_greater_than_or_equal_end(monkeypatch, caplog)
         else:
             monkeypatch.setenv("PARTITA_SKIP_DOTENV", previous_skip)
         importlib.reload(config)
+
+
+def test_set_timezone_valid():
+    original_tz = config.TIMEZONE
+    original_tz_info = config.TIMEZONE_INFO
+    try:
+        config.set_timezone("America/New_York")
+        assert config.TIMEZONE == "America/New_York"
+        assert str(config.TIMEZONE_INFO) == "America/New_York"
+    finally:
+        config.TIMEZONE = original_tz
+        config.TIMEZONE_INFO = original_tz_info
+
+
+def test_set_timezone_invalid_fallback(caplog):
+    original_tz = config.TIMEZONE
+    original_tz_info = config.TIMEZONE_INFO
+    try:
+        caplog.set_level(logging.WARNING)
+        config.set_timezone("Invalid/Timezone")
+        assert config.TIMEZONE == "UTC"
+        assert str(config.TIMEZONE_INFO) == "UTC"
+        assert "Invalid timezone" in caplog.text
+    finally:
+        config.TIMEZONE = original_tz
+        config.TIMEZONE_INFO = original_tz_info
+
+
+def test_set_timezone_logs_info(caplog):
+    original_tz = config.TIMEZONE
+    original_tz_info = config.TIMEZONE_INFO
+    try:
+        caplog.set_level(logging.INFO)
+        config.set_timezone("Asia/Tokyo")
+        assert "Timezone set to Asia/Tokyo" in caplog.text
+    finally:
+        config.TIMEZONE = original_tz
+        config.TIMEZONE_INFO = original_tz_info
