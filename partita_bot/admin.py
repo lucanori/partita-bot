@@ -15,7 +15,7 @@ from partita_bot.admin_operations import (
     RECHECK_BLOCKED_USERS,
     format_admin_operation,
 )
-from partita_bot.event_fetcher import EventFetcher
+from partita_bot.event_fetcher import FETCH_FAILURE, EventFetcher
 from partita_bot.notifications import process_notifications
 from partita_bot.storage import Database
 
@@ -150,14 +150,21 @@ def notify_user(user_id):
 
     local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
     messages_sent = 0
+    fetch_failures = 0
     for city in cities:
         message = event_fetcher.fetch_event_message(city, local_time.date())
+        if message == FETCH_FAILURE:
+            LOGGER.warning("Fetch failure for city %s, not queueing", city)
+            fetch_failures += 1
+            continue
         if message and send_message_via_db_queue(chat_id=user_id, text=message):
             messages_sent += 1
 
     if messages_sent > 0:
         db.update_last_notification(user_id, is_manual=True)
         flash(f"Notification sent to user {user_id} for {messages_sent} cities", "success")
+    elif fetch_failures > 0:
+        flash(f"Failed to fetch events for user {user_id} ({fetch_failures} failures)", "error")
     else:
         flash(f"No events found for user {user_id}. Notification not sent.", "info")
 
@@ -273,6 +280,28 @@ def clear_classification_cache():
     except Exception as exc:
         LOGGER.exception("Failed to clear classification cache")
         flash(f"Error clearing cache: {exc}", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/clear_event_cache", methods=["POST"])
+@auth.login_required
+def clear_event_cache():
+    try:
+        local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
+        today = local_time.date()
+        cities = db.get_all_cities_with_users()
+        total_deleted = 0
+        for city in cities:
+            deleted = db.delete_event_cache(city, today)
+            total_deleted += deleted
+            if deleted > 0:
+                LOGGER.info("Cleared event cache for %s on %s (%d entries)", city, today, deleted)
+        flash(
+            f"Cleared {total_deleted} event cache entries for {len(cities)} cities today", "success"
+        )
+    except Exception as exc:
+        LOGGER.exception("Failed to clear event cache")
+        flash(f"Error clearing event cache: {exc}", "error")
     return redirect(url_for("index"))
 
 

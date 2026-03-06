@@ -52,8 +52,11 @@
                 <form method="POST" action="{{ url_for('cleanup_users') }}" style="display: inline-block; margin-right: 10px;">
                     <button type="submit" class="button" style="background-color: #d32f2f;">Recheck Blocked Users</button>
                 </form>
-                <form method="POST" action="{{ url_for('clear_classification_cache') }}" style="display: inline-block;" onsubmit="return confirm('Clear all city classification cache entries? This cannot be undone.');">
+                <form method="POST" action="{{ url_for('clear_classification_cache') }}" style="display: inline-block; margin-right: 10px;" onsubmit="return confirm('Clear all city classification cache entries? This cannot be undone.');">
                     <button type="submit" class="button" style="background-color: #ff5722;">Clear City Cache</button>
+                </form>
+                <form method="POST" action="{{ url_for('clear_event_cache') }}" style="display: inline-block;" onsubmit="return confirm('Clear today\'s event cache for all configured cities? This cannot be undone.');">
+                    <button type="submit" class="button" style="background-color: #795548;">Clear Event Cache</button>
                 </form>
             </div>
             <h3>Access Control Mode</h3>
