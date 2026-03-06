@@ -6,6 +6,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import partita_bot.config as config
+from partita_bot.event_fetcher import FETCH_FAILURE
 from partita_bot.storage import Database, User
 
 LOGGER = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def process_notifications(
     local_time: datetime,
     mark_manual: bool = False,
 ) -> dict[str, int]:
-    summary = {"notifications_sent": 0, "no_events": 0, "already_notified": 0}
+    summary = {"notifications_sent": 0, "no_events": 0, "already_notified": 0, "fetch_errors": 0}
     city_groups = group_users_by_cities(users, db)
     local_date = local_time.date()
     notified_users_today: set[int] = set()
@@ -64,6 +65,10 @@ def process_notifications(
             if _was_notified_today(user, local_date):
                 summary["already_notified"] += 1
                 notified_users_today.add(user.telegram_id)
+                continue
+
+            if message == FETCH_FAILURE:
+                summary["fetch_errors"] += 1
                 continue
 
             if not message:

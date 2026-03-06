@@ -5,6 +5,8 @@ from datetime import date, datetime
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import partita_bot.config as config
 from partita_bot.storage import Database
@@ -12,7 +14,8 @@ from partita_bot.storage import Database
 LOGGER = logging.getLogger(__name__)
 EXA_ANSWER_ENDPOINT = "https://api.exa.ai/answer"
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
-HTTP_TIMEOUT = 15
+
+FETCH_FAILURE = "__FETCH_FAILURE__"
 
 GATE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -59,7 +62,20 @@ CITY_CLASSIFICATION_SCHEMA: dict[str, Any] = {
 class EventFetcher:
     def __init__(self, db: Database, http_client: requests.Session | None = None):
         self.db = db
-        self.session = http_client or requests.Session()
+        if http_client is not None:
+            self.session = http_client
+        else:
+            self.session = requests.Session()
+            retry_strategy = Retry(
+                total=3,
+                backoff_factor=2,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["POST"],
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            self.session.mount("https://", adapter)
+            self.session.mount("http://", adapter)
 
     def _normalize_for_matching(self, text: str) -> set[str]:
         if not text:
@@ -168,8 +184,8 @@ class EventFetcher:
             return None
 
         gate_result = self._call_exa_gate(city, target_date)
-        if not gate_result:
-            return None
+        if gate_result is None:
+            return FETCH_FAILURE
 
         gate_status = str(gate_result.get("status", "")).lower()
 
@@ -178,9 +194,8 @@ class EventFetcher:
             return None
 
         search_result = self._call_exa_search(city, target_date)
-        if not search_result:
-            self.db.save_event_cache(city, target_date, "no", [])
-            return None
+        if search_result is None:
+            return FETCH_FAILURE
 
         events = search_result.get("events") or []
         valid_events = self._filter_events(events, target_date, city)
@@ -212,12 +227,18 @@ class EventFetcher:
                 EXA_ANSWER_ENDPOINT,
                 headers=headers,
                 json=payload,
-                timeout=HTTP_TIMEOUT,
+                timeout=(5, config.EXA_HTTP_TIMEOUT),
             )
             response.raise_for_status()
             data = response.json()
             self._record_cost_from_response(data, "answer")
             return self._extract_gate_payload(data)
+        except requests.Timeout as exc:
+            LOGGER.error("Exa Answer gate request timed out: %s", exc)
+            return None
+        except requests.ConnectionError as exc:
+            LOGGER.error("Exa Answer gate request connection error: %s", exc)
+            return None
         except requests.RequestException as exc:
             LOGGER.error("Exa Answer gate request failed: %s", exc)
             return None
@@ -246,12 +267,18 @@ class EventFetcher:
                 EXA_SEARCH_ENDPOINT,
                 headers=headers,
                 json=payload,
-                timeout=HTTP_TIMEOUT,
+                timeout=(5, config.EXA_HTTP_TIMEOUT),
             )
             response.raise_for_status()
             data = response.json()
             self._record_cost_from_response(data, "search")
             return self._extract_search_payload(data)
+        except requests.Timeout as exc:
+            LOGGER.error("Exa Search request timed out: %s", exc)
+            return None
+        except requests.ConnectionError as exc:
+            LOGGER.error("Exa Search request connection error: %s", exc)
+            return None
         except requests.RequestException as exc:
             LOGGER.error("Exa Search request failed: %s", exc)
             return None
@@ -388,7 +415,7 @@ class EventFetcher:
                 EXA_ANSWER_ENDPOINT,
                 headers=headers,
                 json=payload,
-                timeout=HTTP_TIMEOUT,
+                timeout=(5, config.EXA_HTTP_TIMEOUT),
             )
             response.raise_for_status()
             data = response.json()
@@ -403,6 +430,12 @@ class EventFetcher:
                     canonical_normalized = normalized if is_city else ""
                 self.db.set_city_classification(normalized, is_city, canonical_normalized)
                 return (is_city, canonical_normalized)
+            return (None, "")
+        except requests.Timeout as exc:
+            LOGGER.error("Exa city classification request timed out: %s", exc)
+            return (None, "")
+        except requests.ConnectionError as exc:
+            LOGGER.error("Exa city classification request connection error: %s", exc)
             return (None, "")
         except requests.RequestException as exc:
             LOGGER.error("Exa city classification request failed: %s", exc)

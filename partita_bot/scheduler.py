@@ -16,8 +16,6 @@ LOGGER = logging.getLogger(__name__)
 scheduler_logger = logging.getLogger("apscheduler")
 scheduler_logger.setLevel(logging.DEBUG if config.DEBUG else logging.WARNING)
 
-TIMEZONE = config.TIMEZONE_INFO
-
 
 def calculate_next_run(
     current_utc: datetime,
@@ -60,8 +58,12 @@ def create_scheduler() -> MatchScheduler:
 
     def check_and_send_notifications() -> None:
         current_utc = datetime.now(tz=ZoneInfo("UTC"))
-        local_time = current_utc.astimezone(TIMEZONE)
-        LOGGER.info("[%s] Running automatic notification cycle", current_utc.isoformat())
+        local_time = current_utc.astimezone(config.TIMEZONE_INFO)
+        LOGGER.info(
+            "[%s] Running automatic notification cycle (local: %s)",
+            current_utc.isoformat(),
+            local_time.isoformat(),
+        )
 
         if not (config.NOTIFICATION_START_HOUR <= local_time.hour < config.NOTIFICATION_END_HOUR):
             LOGGER.debug(
@@ -71,7 +73,7 @@ def create_scheduler() -> MatchScheduler:
             return
 
         last_run = db.get_scheduler_last_run()
-        if last_run and last_run.astimezone(TIMEZONE).date() == local_time.date():
+        if last_run and last_run.astimezone(config.TIMEZONE_INFO).date() == local_time.date():
             LOGGER.debug("Notifications already dispatched today")
             return
 
@@ -85,11 +87,16 @@ def create_scheduler() -> MatchScheduler:
         )
 
         LOGGER.info(
-            "Notifications sent: %s, no events: %s, already notified: %s",
+            "Notifications sent: %s, no events: %s, already notified: %s, fetch errors: %s",
             summary["notifications_sent"],
             summary["no_events"],
             summary["already_notified"],
+            summary.get("fetch_errors", 0),
         )
+
+        if summary.get("fetch_errors", 0) > 0:
+            LOGGER.warning("Fetch errors occurred, not marking day as complete")
+            return
 
         if summary["notifications_sent"] or summary["no_events"]:
             db.update_scheduler_last_run()
@@ -99,7 +106,7 @@ def create_scheduler() -> MatchScheduler:
         next_run = calculate_next_run(
             current_utc=current_utc,
             start_hour=config.NOTIFICATION_START_HOUR,
-            timezone=TIMEZONE,
+            timezone=config.TIMEZONE_INFO,
         )
         scheduler.add_job(
             daily_job,
@@ -115,11 +122,11 @@ def create_scheduler() -> MatchScheduler:
         schedule_next_run()
 
     current_utc = datetime.now(tz=ZoneInfo("UTC"))
-    local_time = current_utc.astimezone(TIMEZONE)
+    local_time = current_utc.astimezone(config.TIMEZONE_INFO)
 
     if config.NOTIFICATION_START_HOUR <= local_time.hour < config.NOTIFICATION_END_HOUR:
         last_run = db.get_scheduler_last_run()
-        if not (last_run and last_run.astimezone(TIMEZONE).date() == local_time.date()):
+        if not (last_run and last_run.astimezone(config.TIMEZONE_INFO).date() == local_time.date()):
             LOGGER.info("Starting within window, running immediately then scheduling next day")
             check_and_send_notifications()
         else:
