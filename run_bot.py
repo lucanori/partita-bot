@@ -3,19 +3,26 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from typing import Callable, cast
+from zoneinfo import ZoneInfo
 
 import requests
 
 import partita_bot.config as config
 from partita_bot.admin_operations import (
     ADMIN_OPERATION_PREFIX,
+    ADMIN_OPERATIONS,
     CLEANUP_USERS,
     DELETE_SENT_LAST_HOURS,
+    NOTIFY_ALL_USERS,
+    NOTIFY_SINGLE_USER,
     RECHECK_BLOCKED_USERS,
 )
 from partita_bot.bot import run_bot
 from partita_bot.bot_manager import get_bot
+from partita_bot.event_fetcher import FETCH_FAILURE, EventFetcher
+from partita_bot.notifications import process_notifications
 from partita_bot.scheduler import create_scheduler
 from partita_bot.storage import Database, is_user_blocked_error
 
@@ -38,15 +45,24 @@ logger = logging.getLogger(__name__)
 RECHECK_OPERATION = RECHECK_BLOCKED_USERS
 LEGACY_CLEANUP_OPERATION = CLEANUP_USERS
 DELETE_SENT_OPERATION = DELETE_SENT_LAST_HOURS
+NOTIFY_ALL_OPERATION = NOTIFY_ALL_USERS
+NOTIFY_SINGLE_OPERATION = NOTIFY_SINGLE_USER
 
 
 async def process_admin_operation(
-    bot_instance, operation: str, message_id: int, db: Database
+    bot_instance,
+    operation: str,
+    operation_id: int,
+    db: Database,
+    params: list[str] | None = None,
+    is_legacy: bool = False,
 ) -> None:
-
-    parts = operation.split(":")
-    op_type = parts[0]
-    params = parts[1:] if len(parts) > 1 else []
+    if params is None:
+        parts = operation.split(":")
+        op_type = parts[0]
+        params = parts[1:] if len(parts) > 1 else []
+    else:
+        op_type = operation
 
     if op_type in {RECHECK_OPERATION, LEGACY_CLEANUP_OPERATION}:
         logger.info("Running user cleanup operation")
@@ -63,18 +79,27 @@ async def process_admin_operation(
         except Exception as admin_error:
             logger.error(f"Error during admin operation: {str(admin_error)}")
         finally:
-            db.mark_message_sent(message_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
     elif op_type == DELETE_SENT_OPERATION:
         if not params:
             logger.error("DELETE_SENT_LAST_HOURS operation missing telegram_id parameter")
-            db.mark_message_sent(message_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
             return
         try:
             telegram_id = int(params[0])
             hours = int(params[1]) if len(params) > 1 else 1
         except ValueError:
             logger.error("Invalid parameters for DELETE_SENT_LAST_HOURS: %s", params)
-            db.mark_message_sent(message_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
             return
 
         logger.info("Deleting sent messages for user %s within last %s hours", telegram_id, hours)
@@ -95,10 +120,125 @@ async def process_admin_operation(
         except Exception as admin_error:
             logger.error(f"Error during delete sent messages operation: {str(admin_error)}")
         finally:
-            db.mark_message_sent(message_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+    elif op_type == NOTIFY_ALL_OPERATION:
+        logger.info("Processing NOTIFY_ALL operation")
+        fetcher = EventFetcher(db)
+        local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
+        try:
+            summary = process_notifications(
+                users=db.get_all_users(),
+                db=db,
+                fetcher=fetcher,
+                queue_message=db.queue_message,
+                local_time=local_time,
+                mark_manual=True,
+            )
+            logger.info(
+                "NOTIFY_ALL summary: sent=%s, no_events=%s, already_notified=%s, fetch_errors=%s",
+                summary["notifications_sent"],
+                summary["no_events"],
+                summary["already_notified"],
+                summary["fetch_errors"],
+            )
+        except Exception as admin_error:
+            logger.error(f"Error during NOTIFY_ALL operation: {str(admin_error)}")
+        finally:
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+    elif op_type == NOTIFY_SINGLE_OPERATION:
+        if not params:
+            logger.error("NOTIFY_SINGLE operation missing user_id parameter")
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+            return
+        try:
+            user_id = int(params[0])
+        except ValueError:
+            logger.error("Invalid user_id for NOTIFY_SINGLE: %s", params[0])
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+            return
+
+        logger.info("Processing NOTIFY_SINGLE operation for user %s", user_id)
+        user = db.get_user(user_id)
+        if not user:
+            logger.error("User %s not found for NOTIFY_SINGLE", user_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+            return
+
+        if not db.can_send_manual_notification(user_id):
+            logger.warning("User %s is on cooldown, skipping NOTIFY_SINGLE", user_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+            return
+
+        cities = db.get_user_cities(user_id)
+        if not cities:
+            logger.info("User %s has no cities configured, skipping NOTIFY_SINGLE", user_id)
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
+            return
+
+        fetcher = EventFetcher(db)
+        local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
+        messages_queued = 0
+        failures = 0
+
+        try:
+            for city in cities:
+                message = fetcher.fetch_event_message(city, local_time.date())
+                if message == FETCH_FAILURE:
+                    failures += 1
+                    continue
+                if message:
+                    if db.queue_message(user_id, message):
+                        messages_queued += 1
+                    else:
+                        failures += 1
+
+            if messages_queued > 0:
+                db.update_last_notification(user_id, is_manual=True)
+
+            logger.info(
+                "NOTIFY_SINGLE summary for user %s: queued=%s, failures=%s",
+                user_id,
+                messages_queued,
+                failures,
+            )
+        except Exception as admin_error:
+            logger.error(f"Error during NOTIFY_SINGLE operation: {str(admin_error)}")
+        finally:
+            if is_legacy:
+                db.mark_message_sent(operation_id)
+            else:
+                db.mark_admin_operation_processed(operation_id)
     else:
-        logger.warning("Unknown admin operation: %s", op_type)
-        db.mark_message_sent(message_id)
+        logger.warning(
+            "Unknown admin operation: %s (expected one of: %s)",
+            op_type,
+            ", ".join(ADMIN_OPERATIONS),
+        )
+        if is_legacy:
+            db.mark_message_sent(operation_id)
+        else:
+            db.mark_admin_operation_processed(operation_id)
 
 
 def process_queued_message(
@@ -115,7 +255,9 @@ def process_queued_message(
         loop = loop_factory()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(process_admin_operation(bot_instance, admin_op, message.id, db))
+            loop.run_until_complete(
+                process_admin_operation(bot_instance, admin_op, message.id, db, is_legacy=True)
+            )
         finally:
             loop.close()
         return
@@ -213,6 +355,44 @@ if __name__ == "__main__":
 
     import threading
 
+    def process_admin_queue():
+        db = Database()
+        logger.info("Starting admin queue processing thread")
+
+        while True:
+            try:
+                operations = db.get_pending_admin_operations(limit=10)
+                for operation in operations:
+                    try:
+                        op_str = str(operation.operation)
+                        logger.info("Processing admin operation: %s", op_str)
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            payload_str = str(operation.payload) if operation.payload else ""
+                            params = payload_str.split(":") if payload_str else []
+                            loop.run_until_complete(
+                                process_admin_operation(
+                                    bot_instance,
+                                    op_str,
+                                    int(operation.id),
+                                    db,
+                                    params=params,
+                                    is_legacy=False,
+                                )
+                            )
+                        finally:
+                            loop.close()
+                    except Exception as e:
+                        logger.error(f"Error processing admin operation {operation.id}: {str(e)}")
+
+                if not operations:
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Error in admin queue processing: {str(e)}")
+                time.sleep(5)
+
     def process_message_queue():
         db = Database()
         logger.info("Starting message queue processing thread")
@@ -232,6 +412,10 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.error(f"Error in message queue processing: {str(e)}")
                 time.sleep(5)
+
+    admin_queue_thread = threading.Thread(target=process_admin_queue)
+    admin_queue_thread.daemon = True
+    admin_queue_thread.start()
 
     queue_thread = threading.Thread(target=process_message_queue)
     queue_thread.daemon = True
