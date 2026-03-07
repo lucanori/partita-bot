@@ -169,6 +169,17 @@ class AccessDenialLog(Base):
     last_sent = Column(DateTime, nullable=False, default=_utcnow)
 
 
+class AdminQueue(Base):
+    __tablename__ = "admin_queue"
+
+    id = Column(Integer, primary_key=True)
+    operation = Column(String, nullable=False)
+    payload = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    processed = Column(Boolean, default=False)
+    processed_at = Column(DateTime, nullable=True)
+
+
 class Database:
     def __init__(self, database_url: str | None = None):
         if database_url:
@@ -291,6 +302,39 @@ class Database:
             AccessDenialLog.__table__.create(self.engine)
         if not inspector.has_table("team_city_cache"):
             TeamCityCache.__table__.create(self.engine)
+        if not inspector.has_table("admin_queue"):
+            AdminQueue.__table__.create(self.engine)
+            self._migrate_admin_queue_if_needed()
+
+    def _migrate_admin_queue_if_needed(self):
+        from sqlalchemy import delete
+
+        admin_rows = (
+            self.session.query(MessageQueue)
+            .filter(MessageQueue.telegram_id == 0)
+            .filter(MessageQueue.sent.is_(False))
+            .all()
+        )
+        for row in admin_rows:
+            if row.message.startswith("ADMIN_OPERATION:"):
+                op_str = row.message.replace("ADMIN_OPERATION:", "").strip()
+                parts = op_str.split(":")
+                operation = parts[0]
+                payload = ":".join(parts[1:]) if len(parts) > 1 else None
+                admin_entry = AdminQueue(
+                    operation=operation,
+                    payload=payload,
+                    created_at=row.created_at,
+                    processed=False,
+                )
+                self.session.add(admin_entry)
+        if admin_rows:
+            ids_to_delete = [row.id for row in admin_rows]
+            stmt = delete(MessageQueue).where(MessageQueue.id.in_(ids_to_delete))
+            self.session.execute(stmt)
+            self.session.commit()
+            logger = logging.getLogger(__name__)
+            logger.info(f"Migrated {len(admin_rows)} admin operations to admin_queue")
 
     @staticmethod
     def normalize_city(city: str) -> str:
@@ -947,3 +991,47 @@ class Database:
             self.session.add(new_entry)
         self.session.commit()
         return True
+
+    def enqueue_admin_operation(
+        self, operation: str, params: list[str] | tuple[str, ...] | None = None
+    ) -> bool:
+        try:
+            payload = ":".join(params) if params else None
+            queue_item = AdminQueue(
+                operation=operation,
+                payload=payload,
+                created_at=self._get_utc_now(),
+                processed=False,
+            )
+            self.session.add(queue_item)
+            self.session.commit()
+            logger = logging.getLogger(__name__)
+            logger.info(f"Admin operation queued: {operation}")
+            return True
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error queueing admin operation: {str(e)}")
+            return False
+
+    def get_pending_admin_operations(self, limit: int = 10) -> list[AdminQueue]:
+        return (
+            self.session.query(AdminQueue)
+            .filter(AdminQueue.processed.is_(False))
+            .order_by(AdminQueue.created_at)
+            .limit(limit)
+            .all()
+        )
+
+    def mark_admin_operation_processed(self, operation_id: int) -> bool:
+        try:
+            operation = self.session.get(AdminQueue, operation_id)
+            if operation:
+                operation.processed = True
+                operation.processed_at = self._get_utc_now()
+                self.session.commit()
+                return True
+            return False
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error marking admin operation as processed: {str(e)}")
+            return False
