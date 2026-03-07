@@ -369,3 +369,74 @@ def test_should_send_denial_small_cooldown(db):
     time.sleep(1.1)
     result = db.should_send_denial(user_id, cooldown_seconds=1)
     assert result is True
+
+
+def test_enqueue_admin_operation_uses_admin_queue(db):
+    result = db.enqueue_admin_operation("NOTIFY_ALL_USERS")
+    assert result is True
+
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "NOTIFY_ALL_USERS"
+    assert pending[0].payload is None
+    assert pending[0].processed is False
+
+
+def test_enqueue_admin_operation_with_params(db):
+    result = db.enqueue_admin_operation("NOTIFY_SINGLE_USER", ["123", "param2"])
+    assert result is True
+
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "NOTIFY_SINGLE_USER"
+    assert pending[0].payload == "123:param2"
+
+
+def test_mark_admin_operation_processed(db):
+    from partita_bot.storage import AdminQueue
+
+    db.enqueue_admin_operation("NOTIFY_ALL_USERS")
+
+    pending = db.get_pending_admin_operations(limit=10)
+    op_id = pending[0].id
+
+    result = db.mark_admin_operation_processed(op_id)
+    assert result is True
+
+    pending_after = db.get_pending_admin_operations(limit=10)
+    assert len(pending_after) == 0
+
+    operation = db.session.query(AdminQueue).filter_by(id=op_id).first()
+    assert operation.processed is True
+    assert operation.processed_at is not None
+
+
+def test_mark_admin_operation_processed_invalid_id(db):
+    result = db.mark_admin_operation_processed(99999)
+    assert result is False
+
+
+def test_get_pending_admin_operations_respects_limit(db):
+    for i in range(15):
+        db.enqueue_admin_operation(f"OP_{i}")
+
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 10
+
+
+def test_get_pending_admin_operations_orders_by_created_at(db):
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    db.enqueue_admin_operation("FIRST")
+
+    first_op = db.get_pending_admin_operations(limit=1)[0]
+    first_op.created_at = datetime.now(tz=ZoneInfo("UTC")) - timedelta(hours=1)
+    db.session.commit()
+
+    db.enqueue_admin_operation("SECOND")
+
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 2
+    assert pending[0].operation == "FIRST"
+    assert pending[1].operation == "SECOND"

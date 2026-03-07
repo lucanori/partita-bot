@@ -1,6 +1,7 @@
-import asyncio
 from types import SimpleNamespace
 from typing import cast
+
+import pytest
 
 import run_bot
 from partita_bot.storage import Database
@@ -60,6 +61,7 @@ class StubDB:
 class AdminDB:
     def __init__(self):
         self.marked: list[int] = []
+        self.admin_marked: list[int] = []
         self.seen: list[tuple[str, int]] = []
 
     async def recheck_blocked_users(self, bot):
@@ -69,25 +71,41 @@ class AdminDB:
     def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> None:
         self.marked.append(message_id)
 
+    def mark_admin_operation_processed(self, operation_id: int) -> bool:
+        self.admin_marked.append(operation_id)
+        return True
+
 
 class FailingAdminDB(AdminDB):
     async def recheck_blocked_users(self, bot):
         raise RuntimeError("boom")
 
 
-def test_process_admin_operation_marks_message():
+@pytest.mark.anyio
+async def test_process_admin_operation_marks_message():
     db = AdminDB()
     fake_bot = SimpleNamespace(name="cleanup")
-    asyncio.run(run_bot.process_admin_operation(fake_bot, "CLEANUP_USERS", 42, cast(Database, db)))
+    await run_bot.process_admin_operation(
+        fake_bot, "CLEANUP_USERS", 42, cast(Database, db), is_legacy=True
+    )
     assert db.marked == [42]
 
 
-def test_process_admin_operation_handles_failure_and_still_marks():
+@pytest.mark.anyio
+async def test_process_admin_operation_marks_admin_queue():
+    db = AdminDB()
+    fake_bot = SimpleNamespace(name="cleanup")
+    await run_bot.process_admin_operation(
+        fake_bot, "RECHECK_BLOCKED_USERS", 42, cast(Database, db), is_legacy=False
+    )
+    assert db.admin_marked == [42]
+
+
+@pytest.mark.anyio
+async def test_process_admin_operation_handles_failure_and_still_marks():
     db = FailingAdminDB()
-    asyncio.run(
-        run_bot.process_admin_operation(
-            SimpleNamespace(name="cleanup"), "CLEANUP_USERS", 99, cast(Database, db)
-        )
+    await run_bot.process_admin_operation(
+        SimpleNamespace(name="cleanup"), "CLEANUP_USERS", 99, cast(Database, db), is_legacy=True
     )
     assert db.marked == [99]
 
@@ -122,10 +140,12 @@ def test_process_queued_message_blocked_user():
 
 
 def test_process_queued_message_admin_operation(monkeypatch):
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, bool]] = []
 
-    async def fake_admin(bot_instance, operation: str, message_id: int, db):
-        calls.append((operation, message_id))
+    async def fake_admin(
+        bot_instance, operation: str, message_id: int, db, params=None, is_legacy=False
+    ):
+        calls.append((operation, message_id, is_legacy))
 
     monkeypatch.setattr(run_bot, "process_admin_operation", fake_admin)
     message = SimpleNamespace(
@@ -136,7 +156,7 @@ def test_process_queued_message_admin_operation(monkeypatch):
     db = AdminDB()
     bot = SimpleNamespace(name="admin")
     run_bot.process_queued_message(bot, cast(Database, db), message)
-    assert calls == [("CLEANUP_USERS", 33)]
+    assert calls == [("CLEANUP_USERS", 33, True)]
 
 
 def test_process_queued_message_applies_rate_limit_sleep():
@@ -165,10 +185,12 @@ def test_process_queued_message_no_sleep_when_none_provided():
 
 
 def test_process_queued_message_admin_operation_no_rate_limit():
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, bool]] = []
 
-    async def fake_admin(bot_instance, operation: str, message_id: int, db):
-        calls.append((operation, message_id))
+    async def fake_admin(
+        bot_instance, operation: str, message_id: int, db, params=None, is_legacy=False
+    ):
+        calls.append((operation, message_id, is_legacy))
 
     import run_bot
 
@@ -188,7 +210,7 @@ def test_process_queued_message_admin_operation_no_rate_limit():
         sleep_calls.append(seconds)
 
     run_bot.process_queued_message(bot, cast(Database, db), message, sleep_fn=stub_sleep)
-    assert calls == [("CLEANUP_USERS", 33)]
+    assert calls == [("CLEANUP_USERS", 33, True)]
     assert sleep_calls == []
 
 
@@ -235,3 +257,106 @@ class DeleteSentDB:
 
     def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> None:
         self.marked.append(message_id)
+
+
+@pytest.mark.anyio
+async def test_process_admin_operation_delete_sent():
+    db = DeleteSentDB()
+    fake_bot = SimpleNamespace(name="delete")
+    await run_bot.process_admin_operation(
+        fake_bot,
+        "DELETE_SENT_LAST_HOURS",
+        42,
+        cast(Database, db),
+        params=["123", "1"],
+        is_legacy=True,
+    )
+    assert db.marked == [42]
+    assert db.deleted_calls == [(123, 1)]
+
+
+class NotifyAllDB:
+    def __init__(self):
+        self.marked: list[int] = []
+        self.users: list = []
+
+    def get_all_users(self):
+        return self.users
+
+    def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> None:
+        self.marked.append(message_id)
+
+
+@pytest.mark.anyio
+async def test_process_admin_operation_notify_all(monkeypatch):
+    db = NotifyAllDB()
+    db.users = [SimpleNamespace(telegram_id=1, city="roma")]
+    fake_bot = SimpleNamespace(name="notify")
+
+    monkeypatch.setattr(
+        run_bot, "process_notifications", lambda **kwargs: {"notifications_sent": 1}
+    )
+
+    await run_bot.process_admin_operation(
+        fake_bot, "NOTIFY_ALL_USERS", 42, cast(Database, db), is_legacy=True
+    )
+    assert db.marked == [42]
+
+
+class NotifySingleDB:
+    def __init__(self):
+        self.marked: list[int] = []
+        self.user: object | None = None
+        self.cities: list[str] = []
+        self.queued: list[tuple[int, str]] = []
+        self.manual_updated: list[int] = []
+
+    def get_user(self, user_id: int):
+        return self.user
+
+    def can_send_manual_notification(self, user_id: int, cooldown_minutes: int = 5) -> bool:
+        return True
+
+    def get_user_cities(self, user_id: int) -> list[str]:
+        return self.cities
+
+    def queue_message(self, telegram_id: int, message: str) -> bool:
+        self.queued.append((telegram_id, message))
+        return True
+
+    def update_last_notification(self, telegram_id: int, is_manual: bool = False):
+        self.manual_updated.append(telegram_id)
+
+    def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> None:
+        self.marked.append(message_id)
+
+
+@pytest.mark.anyio
+async def test_process_admin_operation_notify_single_success(monkeypatch):
+    db = NotifySingleDB()
+    db.user = SimpleNamespace(telegram_id=123)
+    db.cities = ["roma"]
+    fake_bot = SimpleNamespace(name="notify")
+
+    class FakeFetcher:
+        def fetch_event_message(self, city: str, date):
+            return f"Events for {city}"
+
+    monkeypatch.setattr(run_bot, "EventFetcher", lambda db: FakeFetcher())
+
+    await run_bot.process_admin_operation(
+        fake_bot, "NOTIFY_SINGLE_USER", 42, cast(Database, db), params=["123"], is_legacy=True
+    )
+    assert db.marked == [42]
+    assert db.queued == [(123, "Events for roma")]
+    assert db.manual_updated == [123]
+
+
+@pytest.mark.anyio
+async def test_process_admin_operation_unknown_op():
+    db = AdminDB()
+    fake_bot = SimpleNamespace(name="unknown")
+    await run_bot.process_admin_operation(
+        fake_bot, "UNKNOWN_OP", 42, cast(Database, db), is_legacy=True
+    )
+    assert db.marked == [42]

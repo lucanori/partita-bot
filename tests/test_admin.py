@@ -4,7 +4,6 @@ import pytest
 
 import partita_bot.admin as admin_module
 import partita_bot.config as config
-from partita_bot.event_fetcher import FETCH_FAILURE
 from partita_bot.storage import AccessControl, Database
 
 
@@ -13,35 +12,19 @@ def auth_header() -> dict[str, str]:
     return {"Authorization": f"Basic {token}"}
 
 
-class DummyFetcher:
-    def __init__(self):
-        self.calls: list[str] = []
-        self.return_value: str | None = "Evento per {city}"
-
-    def fetch_event_message(self, city: str, target_date) -> str | None:
-        self.calls.append(city)
-        if self.return_value is None:
-            return None
-        return self.return_value.format(city=city)
-
-
 @pytest.fixture
 def admin_test_env():
     original_db = admin_module.db
-    original_fetcher = admin_module.event_fetcher
     test_db = Database(database_url="sqlite:///:memory:")
-    dummy_fetcher = DummyFetcher()
     admin_module.db = test_db
-    admin_module.event_fetcher = dummy_fetcher
     admin_module.app.secret_key = "test-secret"
-    yield admin_module, test_db, dummy_fetcher
+    yield admin_module, test_db
     admin_module.db = original_db
-    admin_module.event_fetcher = original_fetcher
     test_db.close()
 
 
-def test_notify_all_groups_by_city(admin_test_env):
-    admin_app, db, fetcher = admin_test_env
+def test_notify_all_queues_admin_operation(admin_test_env):
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
     db.add_user(2, "bob", "roma")
     db.set_user_cities(1, ["roma"])
@@ -51,13 +34,13 @@ def test_notify_all_groups_by_city(admin_test_env):
         response = client.post("/notify_all", headers=auth_header(), follow_redirects=True)
         assert response.status_code == 200
 
-    assert len(fetcher.calls) == 1
-    assert len(db.get_pending_messages()) == 2
-    assert db.get_user(1).last_notification is not None
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "NOTIFY_ALL_USERS"
 
 
-def test_notify_user_manual_trigger(admin_test_env):
-    admin_app, db, fetcher = admin_test_env
+def test_notify_user_queues_admin_operation(admin_test_env):
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
     db.set_user_cities(1, ["roma"])
 
@@ -65,14 +48,54 @@ def test_notify_user_manual_trigger(admin_test_env):
         response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
         assert response.status_code == 200
 
-    assert fetcher.calls == ["roma"]
-    user = db.get_user(1)
-    assert user is not None
-    assert user.last_manual_notification is not None
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "NOTIFY_SINGLE_USER"
+    assert pending[0].payload == "1"
+
+
+def test_notify_user_respects_cooldown(admin_test_env):
+    admin_app, db = admin_test_env
+    db.add_user(1, "alice", "Roma")
+    db.set_user_cities(1, ["roma"])
+    db.update_last_notification(1, is_manual=True)
+
+    with admin_app.app.test_client() as client:
+        response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
+        assert response.status_code == 200
+
+    pending = db.get_pending_messages()
+    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
+    assert len(admin_ops) == 0
+
+
+def test_notify_user_skips_no_cities(admin_test_env):
+    admin_app, db = admin_test_env
+    db.add_user(1, "alice", "Roma")
+
+    with admin_app.app.test_client() as client:
+        response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
+        assert response.status_code == 200
+
+    pending = db.get_pending_messages()
+    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
+    assert len(admin_ops) == 0
+
+
+def test_notify_user_skips_nonexistent_user(admin_test_env):
+    admin_app, db = admin_test_env
+
+    with admin_app.app.test_client() as client:
+        response = client.post("/notify_user/999", headers=auth_header(), follow_redirects=True)
+        assert response.status_code == 200
+
+    pending = db.get_pending_messages()
+    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
+    assert len(admin_ops) == 0
 
 
 def test_set_mode_switches_access(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
 
     with admin_app.app.test_client() as client:
         response = client.post(
@@ -87,7 +110,7 @@ def test_set_mode_switches_access(admin_test_env):
 
 
 def test_toggle_access_updates_lists(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(10, "lucy", "Torino")
     db.set_access_mode("whitelist")
 
@@ -104,18 +127,19 @@ def test_toggle_access_updates_lists(admin_test_env):
 
 
 def test_cleanup_users_queues_operation(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
 
     with admin_app.app.test_client() as client:
         response = client.post("/cleanup_users", headers=auth_header(), follow_redirects=True)
         assert response.status_code == 200
 
-    pending = db.get_pending_messages()
-    assert any("ADMIN_OPERATION:RECHECK_BLOCKED_USERS" in item.message for item in pending)
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "RECHECK_BLOCKED_USERS"
 
 
 def test_test_notification_queues_message(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(2, "mike", "Milano")
 
     with admin_app.app.test_client() as client:
@@ -128,7 +152,7 @@ def test_test_notification_queues_message(admin_test_env):
 
 
 def test_admin_index_shows_block_status(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     user = db.add_user(10, "blocked", "Roma")
     db.mark_user_blocked(user.telegram_id)
 
@@ -142,7 +166,7 @@ def test_admin_index_shows_block_status(admin_test_env):
 
 
 def test_send_custom_message_queues_message(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
 
     with admin_app.app.test_client() as client:
@@ -161,7 +185,7 @@ def test_send_custom_message_queues_message(admin_test_env):
 
 
 def test_send_custom_message_empty_text_fails(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
 
     with admin_app.app.test_client() as client:
@@ -178,7 +202,7 @@ def test_send_custom_message_empty_text_fails(admin_test_env):
 
 
 def test_send_custom_message_user_not_found(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
 
     with admin_app.app.test_client() as client:
         response = client.post(
@@ -197,7 +221,7 @@ def test_delete_user_pending_removes_recent_messages(admin_test_env):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
 
     db.queue_message(1, "Old message 1")
@@ -223,7 +247,7 @@ def test_delete_user_pending_removes_recent_messages(admin_test_env):
 
 
 def test_delete_user_pending_no_messages(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
 
     with admin_app.app.test_client() as client:
@@ -239,7 +263,7 @@ def test_delete_user_pending_no_messages(admin_test_env):
 
 
 def test_delete_user_pending_user_not_found(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
 
     with admin_app.app.test_client() as client:
         response = client.post(
@@ -251,7 +275,7 @@ def test_delete_user_pending_user_not_found(admin_test_env):
 
 
 def test_delete_user_sent_last_hour_queues_operation(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
 
     with admin_app.app.test_client() as client:
@@ -262,14 +286,14 @@ def test_delete_user_sent_last_hour_queues_operation(admin_test_env):
         )
         assert response.status_code == 200
 
-    pending = db.get_pending_messages()
-    admin_ops = [msg for msg in pending if msg.telegram_id == 0]
-    assert len(admin_ops) == 1
-    assert "DELETE_SENT_LAST_HOURS:1:1" in admin_ops[0].message
+    pending = db.get_pending_admin_operations(limit=10)
+    assert len(pending) == 1
+    assert pending[0].operation == "DELETE_SENT_LAST_HOURS"
+    assert pending[0].payload == "1:1"
 
 
 def test_delete_user_sent_last_hour_user_not_found(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
 
     with admin_app.app.test_client() as client:
         response = client.post(
@@ -285,7 +309,7 @@ def test_delete_user_sent_last_hour_user_not_found(admin_test_env):
 
 
 def test_clear_classification_cache_clears_entries(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.set_city_classification("roma", True, "roma")
     db.set_city_classification("milano", True, "milano")
 
@@ -302,7 +326,7 @@ def test_clear_classification_cache_clears_entries(admin_test_env):
 
 
 def test_approve_pending_adds_to_whitelist_and_removes_pending(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.set_access_mode("whitelist")
     db.upsert_pending_request(12345, "testuser")
 
@@ -319,7 +343,7 @@ def test_approve_pending_adds_to_whitelist_and_removes_pending(admin_test_env):
 
 
 def test_dismiss_pending_removes_from_pending(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.set_access_mode("whitelist")
     db.upsert_pending_request(12345, "testuser")
 
@@ -336,7 +360,7 @@ def test_dismiss_pending_removes_from_pending(admin_test_env):
 
 
 def test_index_shows_pending_requests_in_whitelist_mode(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.set_access_mode("whitelist")
     db.upsert_pending_request(111, "user1")
     db.upsert_pending_request(222, "user2")
@@ -353,7 +377,7 @@ def test_index_shows_pending_requests_in_whitelist_mode(admin_test_env):
 
 
 def test_index_no_pending_requests_in_blocklist_mode(admin_test_env):
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.set_access_mode("blocklist")
     db.upsert_pending_request(111, "user1")
 
@@ -364,29 +388,11 @@ def test_index_no_pending_requests_in_blocklist_mode(admin_test_env):
     assert "Pending Whitelist Requests" not in html
 
 
-def test_notify_user_skips_fetch_failure(admin_test_env):
-    admin_app, db, fetcher = admin_test_env
-    db.add_user(1, "alice", "Roma")
-    db.set_user_cities(1, ["roma"])
-    fetcher.return_value = FETCH_FAILURE
-
-    with admin_app.app.test_client() as client:
-        response = client.post("/notify_user/1", headers=auth_header(), follow_redirects=True)
-        assert response.status_code == 200
-
-    assert fetcher.calls == ["roma"]
-    queued = db.get_pending_messages()
-    assert len(queued) == 0
-    user = db.get_user(1)
-    assert user is not None
-    assert user.last_manual_notification is None
-
-
 def test_clear_event_cache_clears_today_for_all_cities(admin_test_env):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    admin_app, db, _ = admin_test_env
+    admin_app, db = admin_test_env
     db.add_user(1, "alice", "Roma")
     db.add_user(2, "bob", "Milano")
     db.set_user_cities(1, ["roma"])
