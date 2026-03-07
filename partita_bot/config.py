@@ -105,3 +105,5 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY") or os.urandom(24)
 
 BOT_LANGUAGE = os.getenv("BOT_LANGUAGE", "English")
+
+USE_ADMIN_QUEUE = True
