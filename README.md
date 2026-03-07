@@ -126,11 +126,11 @@ For local testing with your latest changes without pushing to GitHub, use `docke
    Open your browser and navigate to `http://localhost:5000` (or the port specified in your `.env`).
 
 3. **Logs:**
-   Check real-time logs:
+    Check real-time logs:
 
    ```bash
-   docker compose -f docker-compose.local.yml logs -f
-   ```
+    docker compose -f docker-compose.local.yml logs -f
+    ```
 
 ## License
 
