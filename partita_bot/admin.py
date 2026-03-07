@@ -12,11 +12,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import partita_bot.config as config
 from partita_bot.admin_operations import (
     DELETE_SENT_LAST_HOURS,
+    NOTIFY_ALL_USERS,
+    NOTIFY_SINGLE_USER,
     RECHECK_BLOCKED_USERS,
-    format_admin_operation,
 )
-from partita_bot.event_fetcher import FETCH_FAILURE, EventFetcher
-from partita_bot.notifications import process_notifications
 from partita_bot.storage import Database
 
 LOGGER = logging.getLogger(__name__)
@@ -25,7 +24,6 @@ app = Flask(__name__, template_folder=str(Path(__file__).parent.parent / "templa
 app.secret_key = config.FLASK_SECRET_KEY
 auth = HTTPBasicAuth()
 db = Database()
-event_fetcher = EventFetcher(db)
 
 users = {config.ADMIN_USERNAME: generate_password_hash(config.ADMIN_PASSWORD)}
 
@@ -91,10 +89,7 @@ def toggle_access(user_id):
 @auth.login_required
 def cleanup_users():
     try:
-        db.queue_message(
-            telegram_id=0,
-            message=format_admin_operation(RECHECK_BLOCKED_USERS),
-        )
+        db.enqueue_admin_operation(RECHECK_BLOCKED_USERS)
         flash("Blocked user recheck has been queued. Check back later for results.", "info")
     except Exception as exc:
         LOGGER.exception("Failed to queue cleanup operation")
@@ -106,24 +101,14 @@ def cleanup_users():
 @auth.login_required
 def notify_all():
     try:
-        local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
-        summary = process_notifications(
-            users=db.get_all_users(),
-            db=db,
-            fetcher=event_fetcher,
-            queue_message=db.queue_message,
-            local_time=local_time,
+        db.enqueue_admin_operation(NOTIFY_ALL_USERS)
+        flash(
+            "Notification job for all users has been queued. The bot will process this shortly.",
+            "info",
         )
-
-        msg = (
-            f"Notifications sent: {summary['notifications_sent']}, "
-            f"No events: {summary['no_events']}, "
-            f"Already notified today: {summary['already_notified']}"
-        )
-        flash(msg, "success" if summary["notifications_sent"] > 0 else "info")
     except Exception as exc:
-        LOGGER.exception("Error in notify_all")
-        flash(f"Error in notify_all: {exc}", "error")
+        LOGGER.exception("Failed to queue notify_all operation")
+        flash(f"Error queueing notification job: {exc}", "error")
 
     return redirect(url_for("index"))
 
@@ -145,28 +130,19 @@ def notify_user(user_id):
 
     cities = db.get_user_cities(user_id)
     if not cities:
-        flash(f"User {user_id} has no cities configured. Notification not sent.", "info")
+        flash(f"User {user_id} has no cities configured. Notification not queued.", "info")
         return redirect(url_for("index"))
 
-    local_time = datetime.now(tz=ZoneInfo("UTC")).astimezone(config.TIMEZONE_INFO)
-    messages_sent = 0
-    fetch_failures = 0
-    for city in cities:
-        message = event_fetcher.fetch_event_message(city, local_time.date())
-        if message == FETCH_FAILURE:
-            LOGGER.warning("Fetch failure for city %s, not queueing", city)
-            fetch_failures += 1
-            continue
-        if message and send_message_via_db_queue(chat_id=user_id, text=message):
-            messages_sent += 1
-
-    if messages_sent > 0:
-        db.update_last_notification(user_id, is_manual=True)
-        flash(f"Notification sent to user {user_id} for {messages_sent} cities", "success")
-    elif fetch_failures > 0:
-        flash(f"Failed to fetch events for user {user_id} ({fetch_failures} failures)", "error")
-    else:
-        flash(f"No events found for user {user_id}. Notification not sent.", "info")
+    try:
+        db.enqueue_admin_operation(NOTIFY_SINGLE_USER, [str(user_id)])
+        flash(
+            f"Notification job for user {user_id} has been queued. "
+            "The bot will process this shortly.",
+            "info",
+        )
+    except Exception as exc:
+        LOGGER.exception("Failed to queue notify_user operation")
+        flash(f"Error queueing notification job: {exc}", "error")
 
     return redirect(url_for("index"))
 
@@ -255,10 +231,7 @@ def delete_user_sent_last_hour(user_id):
         return redirect(url_for("index"))
 
     try:
-        db.queue_message(
-            telegram_id=0,
-            message=format_admin_operation(DELETE_SENT_LAST_HOURS, str(user_id), "1"),
-        )
+        db.enqueue_admin_operation(DELETE_SENT_LAST_HOURS, [str(user_id), "1"])
         flash(
             f"Delete sent messages operation queued for user {user_id} (last 1 hour). "
             "The bot will process this shortly.",
