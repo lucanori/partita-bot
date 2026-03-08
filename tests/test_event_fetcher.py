@@ -833,13 +833,16 @@ def test_fetch_single_flow_returns_error_on_search_failure(monkeypatch):
         assert events == []
 
 
-def test_fetch_event_message_returns_failure_when_both_flows_error(monkeypatch):
+def test_fetch_event_message_returns_failure_when_all_flows_error(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "test-token")
 
         class AlwaysFailSession:
             def post(self, *args, **kwargs):
+                raise requests.Timeout("Always fails")
+
+            def get(self, *args, **kwargs):
                 raise requests.Timeout("Always fails")
 
         fetcher = EventFetcher(db, http_client=cast(requests.Session, AlwaysFailSession()))

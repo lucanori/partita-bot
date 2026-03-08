@@ -120,8 +120,25 @@ class MockSession:
 def test_fetch_event_message_gate_timeout_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
-        session = TimeoutSession(fail_count=4)
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "test-token")
+
+        class TimeoutSessionAll:
+            def __init__(self, fail_count: int = 1):
+                self.fail_count = fail_count
+                self.call_count = 0
+                self.calls: list[dict] = []
+
+            def post(self, url: str, headers=None, json=None, timeout=None):
+                self.call_count += 1
+                self.calls.append({"url": url, "json": json, "headers": headers})
+                if self.call_count <= self.fail_count:
+                    raise requests.Timeout(f"Request timed out (attempt {self.call_count})")
+                return DummyResponse({"answer": {"status": "no"}})
+
+            def get(self, url: str, headers=None, params=None, timeout=None):
+                raise requests.Timeout("Football-data request timed out")
+
+        session = TimeoutSessionAll(fail_count=4)
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
         target_date = date(2026, 3, 2)
 
@@ -139,7 +156,7 @@ def test_fetch_event_message_gate_timeout_returns_fetch_failure(monkeypatch):
 def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "test-token")
 
         class GateOkSearchTimeoutSession:
             def __init__(self):
@@ -152,6 +169,9 @@ def test_fetch_event_message_search_timeout_returns_fetch_failure(monkeypatch):
                 if "answer" in url:
                     return DummyResponse({"answer": {"status": "yes"}})
                 raise requests.Timeout("Search request timed out")
+
+            def get(self, url: str, headers=None, params=None, timeout=None):
+                raise requests.Timeout("Football-data request timed out")
 
         session = GateOkSearchTimeoutSession()
         fetcher = EventFetcher(db, http_client=cast(requests.Session, session))
@@ -542,10 +562,13 @@ def test_partial_failure_one_flow_succeeds(monkeypatch):
 def test_both_flows_error_returns_fetch_failure(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
-        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
+        monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "test-token")
 
         class AlwaysFailSession:
             def post(self, *args, **kwargs):
+                raise requests.Timeout("Always fails")
+
+            def get(self, *args, **kwargs):
                 raise requests.Timeout("Always fails")
 
         session = AlwaysFailSession()
