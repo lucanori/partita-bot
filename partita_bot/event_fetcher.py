@@ -14,7 +14,7 @@ from partita_bot.storage import Database
 LOGGER = logging.getLogger(__name__)
 EXA_ANSWER_ENDPOINT = "https://api.exa.ai/answer"
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
-FOOTBALL_DATA_ENDPOINT = "http://api.football-data.org/v4/matches"
+FOOTBALL_DATA_ENDPOINT = "https://api.football-data.org/v4/matches"
 
 FETCH_FAILURE = "__FETCH_FAILURE__"
 
@@ -84,7 +84,7 @@ class EventFetcher:
                 total=3,
                 backoff_factor=2,
                 status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["POST"],
+                allowed_methods=["POST", "GET"],
                 raise_on_status=False,
             )
             adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -188,19 +188,21 @@ class EventFetcher:
                 merged.append(event)
         return merged
 
-    def _fetch_football_data_matches(self, city: str, target_date: date) -> list[dict[str, Any]]:
+    def _fetch_football_data_matches(
+        self, city: str, target_date: date
+    ) -> tuple[str, list[dict[str, Any]]]:
         if not config.FOOTBALL_API_TOKEN:
             LOGGER.debug("FOOTBALL_API_TOKEN not set, skipping football-data.org fetch")
-            return []
+            return ("no", [])
 
         cached = self.db.get_event_cache(city, target_date, QUERY_TYPE_FOOTBALL_DATA)
         if cached:
             events = cached.get("events") or []
             valid_events = self._filter_events(events, target_date, city, require_source_url=False)
             if cached.get("status") == "yes" and valid_events:
-                return valid_events
+                return ("yes", valid_events)
             if cached.get("status") == "no":
-                return []
+                return ("no", [])
 
         yesterday = target_date - timedelta(days=1)
         tomorrow = target_date + timedelta(days=1)
@@ -221,16 +223,16 @@ class EventFetcher:
             data = response.json()
         except requests.Timeout as exc:
             LOGGER.error("Football-data request timed out: %s", exc)
-            return []
+            return ("error", [])
         except requests.ConnectionError as exc:
             LOGGER.error("Football-data request connection error: %s", exc)
-            return []
+            return ("error", [])
         except requests.RequestException as exc:
             LOGGER.error("Football-data request failed: %s", exc)
-            return []
+            return ("error", [])
         except ValueError as exc:
             LOGGER.error("Football-data response could not be decoded: %s", exc)
-            return []
+            return ("error", [])
 
         matches = data.get("matches", [])
         events = self._convert_football_matches_to_events(matches, target_date, city)
@@ -240,10 +242,10 @@ class EventFetcher:
             self.db.save_event_cache(
                 city, target_date, "yes", valid_events, QUERY_TYPE_FOOTBALL_DATA
             )
+            return ("yes", valid_events)
         else:
             self.db.save_event_cache(city, target_date, "no", [], QUERY_TYPE_FOOTBALL_DATA)
-
-        return valid_events
+            return ("no", [])
 
     def _convert_football_matches_to_events(
         self, matches: list[dict[str, Any]], target_date: date, target_city: str
@@ -437,7 +439,9 @@ class EventFetcher:
 
         target_date = target_date or datetime.now(config.TIMEZONE_INFO).date()
 
-        football_data_events = self._fetch_football_data_matches(city, target_date)
+        football_data_status, football_data_events = self._fetch_football_data_matches(
+            city, target_date
+        )
 
         football_status, football_events = self._fetch_single_flow(
             city,
@@ -455,9 +459,11 @@ class EventFetcher:
             search_query_override=self._build_general_search_query(city, target_date),
         )
 
-        has_football_data = len(football_data_events) > 0
-
-        if football_status == "error" and general_status == "error" and not has_football_data:
+        if (
+            football_data_status == "error"
+            and football_status == "error"
+            and general_status == "error"
+        ):
             return FETCH_FAILURE
 
         if football_status == "error":
