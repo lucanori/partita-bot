@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram.error import Forbidden
 from telegram.ext import CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 import partita_bot.config as config
@@ -266,15 +267,29 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     error = context.error
     logger.error(f"Exception while handling an update: {error}", exc_info=context.error)
 
+    user_id = None
+    if update and update.effective_user:
+        user_id = update.effective_user.id
+
+    if isinstance(error, Forbidden):
+        if user_id:
+            logger.warning(f"User {user_id} has blocked the bot")
+            db.mark_user_blocked(user_id)
+        return
+
     try:
         if update and update.effective_message:
-            user_id = update.effective_user.id
             logger.error(f"Error for user {user_id}: {str(error)}")
 
-            await update.effective_message.reply_text(
-                "Si è verificato un errore. Usa /start per ricominciare.",
-                reply_markup=get_main_keyboard(),
-            )
+            try:
+                await update.effective_message.reply_text(
+                    "Si è verificato un errore. Usa /start per ricominciare.",
+                    reply_markup=get_main_keyboard(),
+                )
+            except Forbidden:
+                if user_id:
+                    logger.warning(f"User {user_id} has blocked the bot (reply failed)")
+                    db.mark_user_blocked(user_id)
     except Exception as e:
         logger.error(f"Error in error handler: {e}", exc_info=True)
 

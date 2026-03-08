@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 import nest_asyncio
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import Application
 
 _NEST_LOOP = asyncio.new_event_loop()
@@ -34,6 +34,9 @@ class Bot:
         try:
             message = await self.bot.send_message(chat_id=chat_id, text=text)
             return True, None, message.message_id
+        except Forbidden as e:
+            logger.warning(f"User {chat_id} has blocked the bot: {str(e)}")
+            return False, f"blocked: {str(e)}", None
         except TelegramError as e:
             logger.error(f"Telegram error sending message to {chat_id}: {str(e)}")
             return False, str(e), None

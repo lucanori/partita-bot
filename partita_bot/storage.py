@@ -43,7 +43,7 @@ def is_user_blocked_error(error_message: str | None) -> bool:
     if not error_message:
         return False
     normalized = error_message.lower()
-    return "forbidden" in normalized and "blocked" in normalized
+    return "blocked" in normalized or ("forbidden" in normalized and "blocked" in normalized)
 
 
 class MessageQueue(Base):
