@@ -562,7 +562,7 @@ def test_event_matches_city_multi_token_city_core():
         assert fetcher._event_matches_city(event_york_only, "New York, United States") is False
 
 
-def test_search_payload_uses_deep_type(monkeypatch):
+def test_search_payload_uses_deep_reasoning_type_and_no_autoprompt(monkeypatch):
     with Database(database_url="sqlite:///:memory:") as db:
         monkeypatch.setattr(event_fetcher.config, "EXA_API_KEY", "test-key")
         monkeypatch.setattr(event_fetcher.config, "FOOTBALL_API_TOKEN", "")
@@ -584,7 +584,8 @@ def test_search_payload_uses_deep_type(monkeypatch):
         search_calls = [c for c in session.calls if c["url"] == event_fetcher.EXA_SEARCH_ENDPOINT]
         assert len(search_calls) == 2
         for search_call in search_calls:
-            assert search_call["json"]["type"] == "deep"
+            assert search_call["json"]["type"] == "deep-reasoning"
+            assert "useAutoprompt" not in search_call["json"]
 
 
 def test_extract_search_payload_handles_output_content_events():

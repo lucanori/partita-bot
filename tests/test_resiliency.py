@@ -482,7 +482,7 @@ def test_default_timeout_when_env_not_set(monkeypatch):
 
     importlib.reload(config_module)
 
-    assert config_module.EXA_HTTP_TIMEOUT == 30
+    assert config_module.EXA_HTTP_TIMEOUT == 60
 
 
 def test_retry_adapter_configured_on_session():

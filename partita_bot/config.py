@@ -97,7 +97,7 @@ FOOTBALL_API_TOKEN = os.getenv("FOOTBALL_API_TOKEN")
 if not FOOTBALL_API_TOKEN:
     logger.info("FOOTBALL_API_TOKEN is not set; football-data.org integration will be skipped")
 
-EXA_HTTP_TIMEOUT = int(os.getenv("EXA_HTTP_TIMEOUT", "30"))
+EXA_HTTP_TIMEOUT = int(os.getenv("EXA_HTTP_TIMEOUT", "60"))
 
 ADMIN_PORT = int(os.getenv("ADMIN_PORT", "5000"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")

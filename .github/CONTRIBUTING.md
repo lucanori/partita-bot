@@ -16,7 +16,7 @@ partita-bot/
 │   ├── bot_manager.py       # Singleton guard for the bot instance
 │   ├── config.py            # Environment configuration and constants
 │   ├── custom_bot.py        # Sync-friendly helper over python-telegram-bot
-│   ├── event_fetcher.py     # Exa Answer integration and schema enforcement
+│   ├── event_fetcher.py     # Exa integration (Answer + Search) and schema enforcement
 │   ├── notifications.py     # City grouping, cooldown tracking, and queue helpers
 │   ├── scheduler.py         # APScheduler job definitions that trigger notifications
 │   └── storage.py           # SQLAlchemy models for users, queue, cache, and metadata
@@ -63,8 +63,8 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 
 ### Event Fetcher (event_fetcher.py)
 
-- Queries the Exa Answer HTTP endpoint (`https://api.exa.ai/answer`) with a localized Italian prompt about matches/events in a city
-- Enforces an `outputSchema` so the response always exposes `status` and `events` with time/location/type/details
+- Runs a two-step Exa workflow: an Answer gate check (`https://api.exa.ai/answer`) for yes/no, then a Search call (`https://api.exa.ai/search`) for structured event details
+- Enforces `outputSchema` on both calls so the gate always exposes `status` and search always exposes `events` with time/location/type/details/source_url
 - Normalizes and formats the structured response into a user-friendly notification text
 - Persists the normalized response through the `event_cache` table so each city/date fetch runs at most once
 

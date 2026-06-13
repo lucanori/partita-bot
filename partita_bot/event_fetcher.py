@@ -533,8 +533,7 @@ class EventFetcher:
 
         payload = {
             "query": query_override or self._build_general_search_query(city, target_date),
-            "useAutoprompt": True,
-            "type": "deep",
+            "type": "deep-reasoning",
             "outputSchema": SEARCH_OUTPUT_SCHEMA,
         }
         headers = {

@@ -1,10 +1,10 @@
 # Partita Bot
 
-Partita Bot is a Telegram bot that keeps Italians informed about the next football match or major sporting event happening in their city by consulting Exa Answer each morning and delivering curated notifications inside the configured time window. Users choose their city via Telegram, the scheduler asks Exa about the day ahead, and notifications are queued, rate limited, and delivered reliably by the bot. The Flask admin panel provides controls for managing access, manual triggers, and user state.
+Partita Bot is a Telegram bot that keeps Italians informed about the next football match or major sporting event happening in their city by consulting Exa each morning and delivering curated notifications inside the configured time window. Users choose their city via Telegram, the scheduler queries Exa about the day ahead (Answer for yes/no gate, Search for event details), and notifications are queued, rate limited, and delivered reliably by the bot. The Flask admin panel provides controls for managing access, manual triggers, and user state.
 
 ## Features
 
-- **Daily Event Signals:** Each morning the scheduler builds a localized query ("oggi DD/MM/YYYY ci sarà una partita di calcio o un evento in città X?") and asks the Exa Answer endpoint for structured event details (orari, location, tipo). Only one query per city per day is performed thanks to the DB-backed cache.
+- **Daily Event Signals:** Each morning the scheduler builds a localized query and runs a two-step Exa workflow: an Answer gate check (yes/no) followed by a Search call for structured event details (orari, location, tipo). Only one query per city per day is performed thanks to the DB-backed cache.
 - **Message Queue System:** Reliable message delivery through a database-backed queue to prevent Telegram API conflicts.
 - **User Configuration:** New users are prompted to set their city. Existing users can update their settings.
 - **Admin Panel:** A simple Flask-based admin interface for managing mode settings and users (allow, block, unblock, or remove). Includes access control and flash notifications.
@@ -27,7 +27,7 @@ Partita Bot is a Telegram bot that keeps Italians informed about the next footba
 │   ├── bot_manager.py       # Singleton bot instance ownership guard
 │   ├── config.py            # Environment configuration and constants
 │   ├── custom_bot.py        # Sync-friendly wrapper over python-telegram-bot
-│   ├── event_fetcher.py     # Exa Answer integration and schema enforcement
+│   ├── event_fetcher.py     # Exa integration (Answer + Search) and schema enforcement
 │   ├── notifications.py     # City grouping, cooldowns, and queue helpers
 │   ├── scheduler.py         # APScheduler job definitions and triggers
 │   └── storage.py           # SQLAlchemy models for users/message queue/cache
@@ -52,7 +52,7 @@ Core modules now live inside `partita_bot/`, but the root entrypoints `run_bot.p
     - `ADMIN_PORT`: Port for the admin interface
     - `ADMIN_USERNAME`/`ADMIN_PASSWORD`: Admin panel credentials
     - `NOTIFICATION_START_HOUR`/`NOTIFICATION_END_HOUR`: Notification time window
-    - `EXA_API_KEY`: Bearer credential for Exa Answer, required for event detection queries
+    - `EXA_API_KEY`: Bearer credential for the Exa API, required for event detection queries
     - `SERVICE_TYPE`: Can be "bot", "admin", or empty to run both
 
 2. **Dependencies:**  
@@ -69,7 +69,7 @@ Core modules now live inside `partita_bot/`, but the root entrypoints `run_bot.p
     - User management
     - Message queue for reliable notifications
     - Scheduler state tracking
-    - `event_cache` table: stores Exa Answer responses keyed by normalized city + date so repeated city lookups are avoided (scheduler and admin flows reuse cached data)
+    - `event_cache` table: stores Exa query responses keyed by normalized city + date so repeated city lookups are avoided (scheduler and admin flows reuse cached data)
 
 ## Testing & Linting
 
