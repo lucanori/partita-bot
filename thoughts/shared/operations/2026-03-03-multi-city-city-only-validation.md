@@ -17,7 +17,7 @@ rationale: Enforced city-only locations with Exa validation, added multi-city su
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added multi-city storage (`user_cities`) with migration and Exa-backed city classification cache.
 - Bot city setup now accepts up to 3 comma-separated cities, validates each as a real city via Exa, and rejects non-city inputs.

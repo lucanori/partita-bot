@@ -14,7 +14,7 @@ supporting_docs:
   - https://www.football-data.org/documentation/quickstart
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added `FOOTBALL_API_TOKEN` config handling and documented it in `.env.example`, logging an informational skip when absent.
 - Introduced football-data.org match ingestion in `EventFetcher`, converting matches to events using local formatting and merging with existing Exa football/general flows.

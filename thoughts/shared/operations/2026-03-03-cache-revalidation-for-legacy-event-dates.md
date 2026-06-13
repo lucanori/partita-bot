@@ -9,7 +9,7 @@ rationale: Ensure previously cached legacy or mismatched events cannot still be 
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added cache-side date revalidation in `fetch_event_message` before sending cached events.
 - If cached `status=yes` contains only invalid events (missing/wrong `event_date`), cache is rewritten to `status=no` with empty events and no message is sent.

@@ -14,7 +14,7 @@ rationale:
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Switched football-data.org endpoint to HTTPS, enabled retries for GET calls, and treated football-data exceptions as errors without caching negative results; football-data flow now returns status + events so scheduler sees failures when all sources error.
 - Updated tests to cover football-data error propagation alongside Exa failures.

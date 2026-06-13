@@ -12,7 +12,7 @@ rationale: "Formattazione città più leggibile, tastiera sempre visibile, tracc
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Formattazione del messaggio di conferma città: ogni città ora è su una riga separata e il testo mantiene la finestra oraria e fuso orario.
 - Migliorata la persistenza della tastiera "🏙 Imposta città" aggiungendo un handler generale per i messaggi testuali fuori dalla conversazione.

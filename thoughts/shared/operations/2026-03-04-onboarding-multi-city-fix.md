@@ -11,7 +11,7 @@ supporting_docs:
   - thoughts/shared/status/2026-03-04-onboarding-on-immediate-send.md
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Adjusted notification fan-out logic so users are not marked as notified when a city has no events, allowing subsequent cities to deliver onboarding notifications.
 - Added a targeted multi-city test to ensure one notification is queued when only later cities have events.

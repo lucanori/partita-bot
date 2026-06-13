@@ -17,7 +17,7 @@ supporting_docs:
   - .github/CONTRIBUTING.md
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Replaced deprecated SQLAlchemy import path with `sqlalchemy.orm.declarative_base`.
 - Replaced legacy `Query.get()` with `Session.get()` in message status updates.

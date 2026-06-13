@@ -12,7 +12,7 @@ rationale: Added a single global language setting for search prompts so all user
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added `BOT_LANGUAGE` config sourced from environment with default `English`.
 - Updated Exa search prompt builder to instruct response in `BOT_LANGUAGE`.

@@ -9,7 +9,7 @@ rationale: Prevent incorrect notifications by enforcing exact target-date matchi
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added strict `event_date` requirement to the Exa event output schema.
 - Updated Exa event prompt to request only exact-date events, exclude uncertain dates, and include `event_date` in `YYYY-MM-DD`.

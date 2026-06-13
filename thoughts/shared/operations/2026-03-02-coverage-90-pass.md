@@ -11,7 +11,7 @@ supporting_docs:
   - README.md
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added `tests/test_bot_entrypoints.py` to cover previously untested branches in `bot.py`.
 - Covered:

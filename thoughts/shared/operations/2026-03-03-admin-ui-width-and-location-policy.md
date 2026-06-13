@@ -12,7 +12,7 @@ rationale: Widened admin UI layout for desktop usability and synced markdownlint
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Expanded the admin panel container width to 1400px with padding so the table uses available desktop space while keeping mobile padding.
 - Synced markdownlint config/ignore files and ran markdownlint per repository policy.

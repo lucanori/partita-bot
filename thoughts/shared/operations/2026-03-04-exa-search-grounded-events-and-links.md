@@ -10,7 +10,7 @@ supporting_docs:
   - https://exa.ai/docs/reference/search
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Replaced single-step event extraction with a two-step Exa flow:
   - Gate check via `https://api.exa.ai/answer` returning only yes/no status.

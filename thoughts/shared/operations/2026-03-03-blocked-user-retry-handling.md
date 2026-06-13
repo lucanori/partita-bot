@@ -25,7 +25,7 @@ supporting_docs:
   - https://core.telegram.org/bots/api
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Added blocked-user error classification and handling so failed deliveries with `Forbidden + blocked` mark both user status and queue message as processed.
 - Added database support for blocked status metadata (`blocked_at`, `last_block_status_check_at`) and async weekly recheck logic.

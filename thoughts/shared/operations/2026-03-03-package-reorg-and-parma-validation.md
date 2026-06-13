@@ -51,7 +51,7 @@ supporting_docs:
   - README.md
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Moved core backend modules into `partita_bot/` package.
 - Kept `run_bot.py` and `wsgi.py` as root entrypoints and updated imports to package paths.

@@ -17,7 +17,7 @@ rationale: Added canonical city handling with 365-day TTL cache, strict city-onl
 supporting_docs: []
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Extended city classification cache with canonical name and 365-day TTL; added admin route/button to clear the cache.
 - Classification via Exa now returns `is_city` and `canonical_name`; bot saves and displays canonical cities, correcting typos.

@@ -44,7 +44,7 @@ supporting_docs:
   - .github/CONTRIBUTING.md
 ---
 
-## Summary of changes
+# Summary of changes
 
 - Replaced the old football fetch pipeline (`fetcher.py` + `teams.yml`) with a new Exa Answer integration in `event_fetcher.py`.
 - Added city-grouped notification coordination in `notifications.py` so scheduler and admin flows perform one query per city per day and then fan-out messages by user.
