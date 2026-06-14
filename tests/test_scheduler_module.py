@@ -106,6 +106,11 @@ class StubDatabase:
         self.queued_messages.append(message)
         return True
 
+    def queue_rich_message(self, telegram_id: int, rich_msg) -> bool:
+        text = rich_msg if isinstance(rich_msg, str) else rich_msg.text
+        self.queued_messages.append(text)
+        return True
+
 
 def _patch_datetime(monkeypatch, fixed_now):
     class FixedDatetime(datetime):

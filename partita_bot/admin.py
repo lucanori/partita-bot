@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from partita_bot.admin_operations import (
     NOTIFY_SINGLE_USER,
     RECHECK_BLOCKED_USERS,
 )
+from partita_bot.rich_text import RichMessage
 from partita_bot.storage import Database
 
 LOGGER = logging.getLogger(__name__)
@@ -28,7 +30,9 @@ db = Database()
 users = {config.ADMIN_USERNAME: generate_password_hash(config.ADMIN_PASSWORD)}
 
 
-def send_message_via_db_queue(chat_id: int, text: str) -> bool:
+def send_message_via_db_queue(chat_id: int, text: RichMessage | str) -> bool:
+    if isinstance(text, RichMessage):
+        return db.queue_rich_message(telegram_id=chat_id, rich_msg=text)
     return db.queue_message(telegram_id=chat_id, message=text)
 
 
@@ -192,6 +196,17 @@ def send_custom_message(user_id):
     custom_text = request.form.get("message_text", "").strip()
     if not custom_text:
         flash("Message text cannot be empty", "error")
+        return redirect(url_for("index"))
+
+    if custom_text.startswith("{"):
+        try:
+            rich_msg = RichMessage.from_json(custom_text)
+            if send_message_via_db_queue(chat_id=user_id, text=rich_msg):
+                flash(f"Rich custom message queued for user {user_id}", "success")
+            else:
+                flash("Failed to queue rich custom message.", "error")
+        except (json.JSONDecodeError, ValueError) as exc:
+            flash(f"Invalid rich message JSON: {exc}", "error")
         return redirect(url_for("index"))
 
     if send_message_via_db_queue(chat_id=user_id, text=custom_text):

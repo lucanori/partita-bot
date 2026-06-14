@@ -52,6 +52,9 @@ class MessageQueue(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, nullable=False)
     message = Column(String, nullable=False)
+    parse_mode = Column(String, nullable=True)
+    entities_json = Column(Text, nullable=True)
+    link_preview_options_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=_utcnow)
     sent = Column(Boolean, default=False)
     sent_at = Column(DateTime, nullable=True)
@@ -222,6 +225,17 @@ class Database:
         if "sent_message_id" not in queue_columns:
             with self.engine.connect() as conn:
                 conn.execute(text("ALTER TABLE message_queue ADD COLUMN sent_message_id INTEGER"))
+        if "parse_mode" not in queue_columns:
+            with self.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE message_queue ADD COLUMN parse_mode VARCHAR"))
+        if "entities_json" not in queue_columns:
+            with self.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE message_queue ADD COLUMN entities_json TEXT"))
+        if "link_preview_options_json" not in queue_columns:
+            with self.engine.connect() as conn:
+                conn.execute(
+                    text("ALTER TABLE message_queue ADD COLUMN link_preview_options_json TEXT")
+                )
 
         if not inspector.has_table("scheduler_state"):
             SchedulerState.__table__.create(self.engine)
@@ -672,6 +686,56 @@ class Database:
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error(f"Error queueing message: {str(e)}")
+            return False
+
+    def queue_rich_message(self, telegram_id: int, rich_msg) -> bool:
+        from partita_bot.rich_text import RichMessage
+
+        if not isinstance(rich_msg, RichMessage):
+            return self.queue_message(telegram_id, str(rich_msg))
+
+        try:
+            import json
+
+            entities_json = None
+            if rich_msg.entities:
+                serialized = []
+                for e in rich_msg.entities:
+                    entry: dict[str, object] = {
+                        "type": e.type,
+                        "offset": e.offset,
+                        "length": e.length,
+                    }
+                    if e.url:
+                        entry["url"] = e.url
+                    if e.language:
+                        entry["language"] = e.language
+                    if e.custom_emoji_id:
+                        entry["custom_emoji_id"] = e.custom_emoji_id
+                    serialized.append(entry)
+                entities_json = json.dumps(serialized, ensure_ascii=False)
+
+            link_preview_json = None
+            if rich_msg.link_preview_options:
+                lpo_dict = rich_msg.link_preview_options.to_dict()
+                link_preview_json = json.dumps(lpo_dict, ensure_ascii=False)
+
+            queue_item = MessageQueue(
+                telegram_id=telegram_id,
+                message=rich_msg.text,
+                parse_mode=rich_msg.parse_mode,
+                entities_json=entities_json,
+                link_preview_options_json=link_preview_json,
+                created_at=self._get_utc_now(),
+            )
+            self.session.add(queue_item)
+            self.session.commit()
+            logger = logging.getLogger(__name__)
+            logger.info(f"Rich message queued for user {telegram_id}")
+            return True
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error queueing rich message: {str(e)}")
             return False
 
     def get_pending_messages(self, limit: int = 10) -> list:

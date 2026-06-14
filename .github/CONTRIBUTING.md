@@ -18,6 +18,7 @@ partita-bot/
 │   ├── custom_bot.py        # Sync-friendly helper over python-telegram-bot
 │   ├── event_fetcher.py     # Exa integration (Answer + Search) and schema enforcement
 │   ├── notifications.py     # City grouping, cooldown tracking, and queue helpers
+│   ├── rich_text.py         # Rich-message builder, storage, and serialization
 │   ├── scheduler.py         # APScheduler job definitions that trigger notifications
 │   └── storage.py           # SQLAlchemy models for users, queue, cache, and metadata
 ├── run_bot.py               # Entrypoint that boots the bot service, scheduler, queue worker
@@ -61,6 +62,13 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 - Queue processor runs in a dedicated thread in the bot service
 - Tracks message delivery status and timestamps
 
+### Rich text (rich_text.py)
+
+- Provides `RichMessage` dataclass with text, entities, parse mode, and link preview options
+- `RichMessageBuilder` constructs messages with bold, italic, links, and blockquotes via fluent API
+- `RichMessageStorage` serializes rich content into queue-compatible JSON columns
+- Deserialization helpers reconstruct `MessageEntity` lists and `LinkPreviewOptions` from stored JSON
+
 ### Event Fetcher (event_fetcher.py)
 
 - Runs a two-step Exa workflow: an Answer gate check (`https://api.exa.ai/answer`) for yes/no, then a Search call (`https://api.exa.ai/search`) for structured event details
@@ -101,7 +109,7 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 
 #### Main Bot (bot.py)
 
-- Uses python-telegram-bot v20.7
+- Uses python-telegram-bot v22.8
 - Implements conversation flows for settings
 - Manages user registration and preferences
 - Contains command handlers and conversation logic

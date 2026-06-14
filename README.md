@@ -5,9 +5,10 @@ Partita Bot is a Telegram bot that keeps Italians informed about the next footba
 ## Features
 
 - **Daily Event Signals:** Each morning the scheduler builds a localized query and runs a two-step Exa workflow: an Answer gate check (yes/no) followed by a Search call for structured event details (orari, location, tipo). Only one query per city per day is performed thanks to the DB-backed cache.
+- **Rich Notification Formatting:** Event notifications use Telegram rich text with bold headings, clickable source links, blockquote-style details, and disabled link previews for compact delivery.
 - **Message Queue System:** Reliable message delivery through a database-backed queue to prevent Telegram API conflicts.
 - **User Configuration:** New users are prompted to set their city. Existing users can update their settings.
-- **Admin Panel:** A simple Flask-based admin interface for managing mode settings and users (allow, block, unblock, or remove). Includes access control and flash notifications.
+- **Admin Panel:** A simple Flask-based admin interface for managing mode settings and users (allow, block, unblock, or remove). Includes access control and flash notifications. The custom message form accepts plain text or a JSON rich-message payload (text, parse_mode, entities, link_preview_options).
 - **Container Separation:** Bot and admin services can run in separate containers to improve stability and prevent API conflicts.
 - **Scheduler:** APScheduler is used for periodic job execution. The scheduler fetches match data on a set schedule.
 - **Docker Ready:** The project is containerized using Docker. There are separate configurations for production and local development.
@@ -29,6 +30,7 @@ Partita Bot is a Telegram bot that keeps Italians informed about the next footba
 │   ├── custom_bot.py        # Sync-friendly wrapper over python-telegram-bot
 │   ├── event_fetcher.py     # Exa integration (Answer + Search) and schema enforcement
 │   ├── notifications.py     # City grouping, cooldowns, and queue helpers
+│   ├── rich_text.py         # Rich-message abstraction for Telegram rich text
 │   ├── scheduler.py         # APScheduler job definitions and triggers
 │   └── storage.py           # SQLAlchemy models for users/message queue/cache
 ├── run_bot.py               # Entry point that boots bot, scheduler, and queue worker
@@ -57,7 +59,7 @@ Core modules now live inside `partita_bot/`, but the root entrypoints `run_bot.p
 
 2. **Dependencies:**  
     Dependencies are declared in `pyproject.toml` so you can use `uv` or `pip` even when pairing with `requirements.txt`. They include:
-    - python-telegram-bot (v20.7)
+    - python-telegram-bot (v22.8)
     - Flask and Flask-HTTPAuth
     - SQLAlchemy
     - APScheduler

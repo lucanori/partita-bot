@@ -1,26 +1,12 @@
 from base64 import b64encode
 
-import pytest
-
-import partita_bot.admin as admin_module
 import partita_bot.config as config
-from partita_bot.storage import AccessControl, Database
+from partita_bot.storage import AccessControl
 
 
 def auth_header() -> dict[str, str]:
     token = b64encode(f"{config.ADMIN_USERNAME}:{config.ADMIN_PASSWORD}".encode()).decode()
     return {"Authorization": f"Basic {token}"}
-
-
-@pytest.fixture
-def admin_test_env():
-    original_db = admin_module.db
-    test_db = Database(database_url="sqlite:///:memory:")
-    admin_module.db = test_db
-    admin_module.app.secret_key = "test-secret"
-    yield admin_module, test_db
-    admin_module.db = original_db
-    test_db.close()
 
 
 def test_notify_all_queues_admin_operation(admin_test_env):

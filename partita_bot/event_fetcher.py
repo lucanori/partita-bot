@@ -6,9 +6,11 @@ from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
+from telegram import LinkPreviewOptions
 from urllib3.util.retry import Retry
 
 import partita_bot.config as config
+from partita_bot.rich_text import RichMessage, RichMessageBuilder
 from partita_bot.storage import Database
 
 LOGGER = logging.getLogger(__name__)
@@ -676,12 +678,16 @@ class EventFetcher:
         city: str,
         target_date: date,
         events: list[dict[str, Any]],
-    ) -> str:
+    ) -> RichMessage:
+        builder = RichMessageBuilder()
+
         header = (
             f"📣 {target_date.strftime('%d/%m/%Y')} a {city.title()} ci sono "
-            f"{len(events)} eventi rilevanti:\n\n"
+            f"{len(events)} eventi rilevanti:"
         )
-        lines: list[str] = [header]
+        builder.add_bold(header)
+        builder.add("\n\n")
+
         for entry in events:
             title = entry.get("title", "Evento")
             time = entry.get("time", "Orario non disponibile")
@@ -690,15 +696,23 @@ class EventFetcher:
             details = entry.get("details")
             source_url = entry.get("source_url", "")
 
-            lines.append(f"🕒 {time} – {title} ({event_type})")
-            lines.append(f"📍 {location}")
-            if details:
-                lines.append(f"ℹ️ {details}")
-            if source_url:
-                lines.append(f"🔗 {source_url}")
-            lines.append("")
+            title_line = f"🕒 {time} \u2013 {title} ({event_type})"
+            builder.add_bold(title_line)
+            builder.add("\n")
 
-        return "\n".join(lines).strip()
+            builder.add(f"📍 {location}\n")
+            if details:
+                builder.add_blockquote(f"ℹ️ {details}\n")
+
+            if source_url:
+                builder.add_link("🔗 Vai alla fonte", source_url)
+                builder.add("\n")
+
+            builder.add("\n")
+
+        builder.add_italic("ℹ️ Bot powered by Exa")
+
+        return builder.build(link_preview_options=LinkPreviewOptions(is_disabled=True))
 
     def classify_city(self, location: str) -> tuple[bool | None, str]:
         normalized = self.db.normalize_city(location)

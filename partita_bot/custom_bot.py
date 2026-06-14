@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 import nest_asyncio
 from telegram.error import Forbidden, TelegramError
@@ -29,10 +30,22 @@ class Bot:
         return self._loop
 
     async def _send_message_async(
-        self, chat_id: int, text: str
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+        entities: list[Any] | None = None,
+        link_preview_options: Any = None,
     ) -> tuple[bool, str | None, int | None]:
         try:
-            message = await self.bot.send_message(chat_id=chat_id, text=text)
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            if entities:
+                kwargs["entities"] = entities
+            elif parse_mode:
+                kwargs["parse_mode"] = parse_mode
+            if link_preview_options is not None:
+                kwargs["link_preview_options"] = link_preview_options
+            message = await self.bot.send_message(**kwargs)
             return True, None, message.message_id
         except Forbidden as e:
             logger.warning(f"User {chat_id} has blocked the bot: {str(e)}")
@@ -44,12 +57,21 @@ class Bot:
             logger.error(f"Unexpected error sending message to {chat_id}: {str(e)}")
             return False, str(e), None
 
-    def send_message_sync(self, chat_id: int, text: str) -> tuple[bool, str | None, int | None]:
+    def send_message_sync(
+        self,
+        chat_id: int,
+        text: str,
+        parse_mode: str | None = None,
+        entities: list[Any] | None = None,
+        link_preview_options: Any = None,
+    ) -> tuple[bool, str | None, int | None]:
         loop = self._get_event_loop()
 
         try:
             success, error, message_id = loop.run_until_complete(
-                self._send_message_async(chat_id, text)
+                self._send_message_async(
+                    chat_id, text, parse_mode, entities, link_preview_options
+                )
             )
             if not success:
                 logger.warning(f"Failed to send message to {chat_id}: {error}")
@@ -61,7 +83,9 @@ class Bot:
 
             try:
                 success, error, message_id = loop.run_until_complete(
-                    self._send_message_async(chat_id, text)
+                    self._send_message_async(
+                        chat_id, text, parse_mode, entities, link_preview_options
+                    )
                 )
                 if not success:
                     logger.error(f"Failed to send message after loop reset: {error}")

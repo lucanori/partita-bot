@@ -133,7 +133,7 @@ async def process_admin_operation(
                 users=db.get_all_users(),
                 db=db,
                 fetcher=fetcher,
-                queue_message=db.queue_message,
+                queue_message=db.queue_rich_message,
                 local_time=local_time,
                 mark_manual=True,
             )
@@ -207,8 +207,8 @@ async def process_admin_operation(
                 if message == FETCH_FAILURE:
                     failures += 1
                     continue
-                if message:
-                    if db.queue_message(user_id, message):
+                if message is not None:
+                    if db.queue_rich_message(user_id, message):
                         messages_queued += 1
                     else:
                         failures += 1
@@ -263,7 +263,32 @@ def process_queued_message(
         return
 
     logger.info("Processing queued message %s for user %s", message.id, message.telegram_id)
-    result = bot_instance.send_message_sync(chat_id=message.telegram_id, text=message.message)
+
+    from partita_bot.rich_text import deserialize_entities, deserialize_link_preview_options
+
+    parse_mode = None
+    entities = None
+    link_preview_options = None
+
+    if hasattr(message, "parse_mode") and message.parse_mode:
+        parse_mode = str(message.parse_mode)
+    if hasattr(message, "entities_json") and message.entities_json:
+        entities = deserialize_entities(str(message.entities_json))
+    if hasattr(message, "link_preview_options_json") and message.link_preview_options_json:
+        link_preview_options = deserialize_link_preview_options(
+            str(message.link_preview_options_json)
+        )
+
+    if entities:
+        parse_mode = None
+
+    result = bot_instance.send_message_sync(
+        chat_id=message.telegram_id,
+        text=message.message,
+        parse_mode=parse_mode,
+        entities=entities,
+        link_preview_options=link_preview_options,
+    )
     if isinstance(result, tuple) and len(result) >= 2:
         success = result[0]
         error = result[1]

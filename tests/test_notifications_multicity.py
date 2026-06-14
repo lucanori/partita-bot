@@ -27,7 +27,7 @@ def test_process_notifications_multi_city_onboarding_no_events_then_events():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 

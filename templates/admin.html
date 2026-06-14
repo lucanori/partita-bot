@@ -161,7 +161,7 @@
                         <button type="submit" class="button test" title="Send test notification">Test Notify</button>
                     </form>
                     <form method="POST" action="{{ url_for('send_custom_message', user_id=user.telegram_id) }}" style="display: inline; margin-top: 5px;">
-                        <input type="text" name="message_text" placeholder="Custom message..." style="padding: 4px; width: 150px;" required>
+                        <input type="text" name="message_text" placeholder="Plain text or JSON rich message..." style="padding: 4px; width: 200px;" required title="Enter plain text, or JSON like {&quot;text&quot;:&quot;...&quot;,&quot;parse_mode&quot;:&quot;HTML&quot;,&quot;entities&quot;:[...],&quot;link_preview_options&quot;:{...}}">
                         <button type="submit" class="button" style="background-color: #9c27b0;" title="Send custom message">Send Custom</button>
                     </form>
                     <form method="POST" action="{{ url_for('delete_user_pending', user_id=user.telegram_id) }}" style="display: inline;" onsubmit="return confirm('Delete pending messages for this user from last 24h?');">

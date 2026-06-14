@@ -82,7 +82,7 @@ def create_scheduler() -> MatchScheduler:
             users=users,
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 

@@ -39,7 +39,9 @@ class StubBot:
         self.error_message = "Failed to send"
         self.message_id = message_id
 
-    def send_message_sync(self, chat_id: int, text: str) -> tuple[bool, str | None, int | None]:
+    def send_message_sync(
+        self, chat_id: int, text: str, **kwargs
+    ) -> tuple[bool, str | None, int | None]:
         self.sent.append((chat_id, text))
         if self.succeed:
             return True, None, self.message_id
@@ -322,6 +324,11 @@ class NotifySingleDB:
 
     def queue_message(self, telegram_id: int, message: str) -> bool:
         self.queued.append((telegram_id, message))
+        return True
+
+    def queue_rich_message(self, telegram_id: int, rich_msg) -> bool:
+        text = rich_msg if isinstance(rich_msg, str) else rich_msg.text
+        self.queued.append((telegram_id, text))
         return True
 
     def update_last_notification(self, telegram_id: int, is_manual: bool = False):

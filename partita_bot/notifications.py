@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 
 import partita_bot.config as config
 from partita_bot.event_fetcher import FETCH_FAILURE
+from partita_bot.rich_text import RichMessage
 from partita_bot.storage import Database, User
 
 LOGGER = logging.getLogger(__name__)
-QueueFn = Callable[[int, str], bool]
+QueueFn = Callable[[int, RichMessage | str], bool]
 
 
 def group_users_by_cities(users: list[User], db: Database) -> dict[str, list[tuple[User, str]]]:
@@ -71,7 +72,7 @@ def process_notifications(
                 summary["fetch_errors"] += 1
                 continue
 
-            if not message:
+            if message is None:
                 summary["no_events"] += 1
                 continue
 

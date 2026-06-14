@@ -31,7 +31,7 @@ def test_process_notifications_groups_by_city_once():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -57,7 +57,7 @@ def test_process_notifications_skips_already_notified():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -81,7 +81,7 @@ def test_process_notifications_skips_blocked_users():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -102,7 +102,7 @@ def test_process_notifications_skips_users_without_cities():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -125,7 +125,7 @@ def test_process_notifications_skips_access_blocked_users():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -147,7 +147,7 @@ def test_process_notifications_notifies_once_per_user_multiple_cities():
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 

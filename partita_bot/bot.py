@@ -160,7 +160,7 @@ def _maybe_send_onboarding_notification(user_id: int) -> None:
         users=[user],
         db=db,
         fetcher=fetcher,
-        queue_message=db.queue_message,
+        queue_message=db.queue_rich_message,
         local_time=local_time,
     )
 

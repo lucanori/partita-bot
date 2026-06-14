@@ -273,7 +273,7 @@ def test_process_notifications_increments_fetch_errors_for_failure_sentinel(monk
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -298,7 +298,7 @@ def test_process_notifications_increments_no_events_for_genuine_no_events(monkey
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=local_time,
         )
 
@@ -334,7 +334,7 @@ def test_check_and_send_notifications_does_not_update_last_run_when_fetch_errors
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=datetime(2026, 3, 2, 12, tzinfo=ZoneInfo("Europe/Rome")),
         )
 
@@ -374,7 +374,7 @@ def test_check_and_send_notifications_updates_last_run_when_only_no_events(monke
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=datetime(2026, 3, 2, 12, tzinfo=ZoneInfo("Europe/Rome")),
         )
 
@@ -422,7 +422,7 @@ def test_check_and_send_notifications_updates_last_run_when_notifications_sent(
             users=db.get_all_users(),
             db=db,
             fetcher=fetcher,
-            queue_message=db.queue_message,
+            queue_message=db.queue_rich_message,
             local_time=datetime(2026, 3, 2, 12, tzinfo=ZoneInfo("Europe/Rome")),
         )
 
@@ -453,7 +453,7 @@ def test_manual_retry_session_eventual_success(monkeypatch):
         result = fetcher.fetch_event_message("Roma", target_date)
 
         assert result is not None
-        assert "Test Event" in result
+        assert "Test Event" in result.text
         assert session.gate_call_count == 2
         assert session.search_call_count == 2
 
@@ -556,7 +556,7 @@ def test_partial_failure_one_flow_succeeds(monkeypatch):
 
         assert result is not None
         assert result != FETCH_FAILURE
-        assert "Football Match" in result
+        assert "Football Match" in result.text
 
 
 def test_both_flows_error_returns_fetch_failure(monkeypatch):

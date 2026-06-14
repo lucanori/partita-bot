@@ -110,6 +110,17 @@ class FakeDB:
         self.queued_messages.append((telegram_id, message))
         return True
 
+    def queue_rich_message(self, telegram_id: int, rich_msg) -> bool:
+        text = rich_msg.text if hasattr(rich_msg, "text") else str(rich_msg)
+        self.queued_messages.append((telegram_id, text))
+        return True
+
+    @staticmethod
+    def normalize_city(city: str) -> str:
+        if not city:
+            return ""
+        return city.strip().casefold()
+
     def update_last_notification(self, telegram_id: int, is_manual: bool = False):
         self.last_notification_updated.append(telegram_id)
         if self._user:
@@ -117,10 +128,6 @@ class FakeDB:
             from zoneinfo import ZoneInfo
 
             self._user.last_notification = datetime.now(tz=ZoneInfo("UTC"))
-
-    @staticmethod
-    def normalize_city(city: str) -> str:
-        return city.strip().casefold()
 
 
 def _make_update(user_id: int = 42, text: str = "") -> FakeUpdate:
@@ -327,7 +334,7 @@ class FakeEventFetcherNoEvents:
         return (True, location.strip().casefold())
 
     def fetch_event_message(self, city: str, target_date):
-        return ""
+        return None
 
 
 def test_set_city_no_events_does_nothing(monkeypatch, freezer):

@@ -122,8 +122,8 @@ def test_event_fetcher_gate_yes_search_called_with_links(monkeypatch):
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Finale" in message
-        assert "🔗 https://example.com/event1" in message
+        assert "Finale" in message.text
+        assert "Vai alla fonte" in message.text
         assert len(session.calls) == 4
 
         cached_football = db.get_event_cache("Roma", target_date, QUERY_TYPE_FOOTBALL)
@@ -174,8 +174,8 @@ def test_search_filters_wrong_date(monkeypatch):
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Correct Event" in message
-        assert "Wrong Date Event" not in message
+        assert "Correct Event" in message.text
+        assert "Wrong Date Event" not in message.text
 
 
 def test_search_filters_wrong_city(monkeypatch):
@@ -217,8 +217,8 @@ def test_search_filters_wrong_city(monkeypatch):
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Roma Event" in message
-        assert "Cremona Event" not in message
+        assert "Roma Event" in message.text
+        assert "Cremona Event" not in message.text
 
 
 def test_search_filters_missing_source_url(monkeypatch):
@@ -259,8 +259,8 @@ def test_search_filters_missing_source_url(monkeypatch):
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Valid Event" in message
-        assert "Missing URL Event" not in message
+        assert "Valid Event" in message.text
+        assert "Missing URL Event" not in message.text
 
 
 def test_cache_revalidation_filters_legacy_events(monkeypatch):
@@ -296,9 +296,9 @@ def test_cache_revalidation_filters_legacy_events(monkeypatch):
         message = fetcher.fetch_event_message("Roma", target_date)
 
         assert message is not None
-        assert "Valid Legacy" in message
-        assert "Legacy No URL" not in message
-        assert "Legacy Wrong City" not in message
+        assert "Valid Legacy" in message.text
+        assert "Legacy No URL" not in message.text
+        assert "Legacy Wrong City" not in message.text
 
         cached = db.get_event_cache("Roma", target_date, QUERY_TYPE_GENERAL)
         assert cached is not None
@@ -383,7 +383,7 @@ def test_event_fetcher_uses_cache_before_calling_api(monkeypatch):
         fetcher = EventFetcher(db, http_client=cast(requests.Session, FailingSession()))
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Cached" in message
+        assert "Cached" in message.text
 
 
 def test_gate_output_schema_requires_status_only():
@@ -674,7 +674,7 @@ def test_format_event_message_includes_link():
             }
         ]
         message = fetcher._format_event_message("Roma", date(2026, 3, 2), events)
-        assert "🔗 https://example.com/event" in message
+        assert "Vai alla fonte" in message.text
 
 
 def test_format_event_message_omits_link_when_missing():
@@ -689,7 +689,7 @@ def test_format_event_message_omits_link_when_missing():
             }
         ]
         message = fetcher._format_event_message("Roma", date(2026, 3, 2), events)
-        assert "🔗" not in message
+        assert "Vai alla fonte" not in message.text
 
 
 def test_dedup_key_uses_source_url():
@@ -894,7 +894,7 @@ def test_fetch_event_message_returns_events_when_one_flow_succeeds(monkeypatch):
         result = fetcher.fetch_event_message("Roma", target_date)
         assert result is not None
         assert result != FETCH_FAILURE
-        assert "Football Match" in result
+        assert "Football Match" in result.text
 
 
 def test_fetch_event_message_returns_none_when_both_no_events(monkeypatch):
@@ -955,8 +955,8 @@ def test_football_and_general_cache_isolation(monkeypatch):
 
         message = fetcher.fetch_event_message("Roma", target_date)
         assert message is not None
-        assert "Football Event" in message
-        assert "General Event" in message
+        assert "Football Event" in message.text
+        assert "General Event" in message.text
 
 
 def test_query_type_constants_defined():
