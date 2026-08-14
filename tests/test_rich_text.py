@@ -460,25 +460,6 @@ class TestEventFormattingShape:
         bold_entities = [e for e in msg.entities if e.type == "bold"]
         assert len(bold_entities) >= 1
 
-    def test_footer_is_italic(self, db):
-        fetcher = self._make_fetcher(db)
-        events = [
-            {
-                "title": "Evento",
-                "time": "12:00",
-                "location": "Centro",
-                "type": "Incontro",
-                "event_date": "2026-06-15",
-                "source_url": "https://example.com/e",
-            }
-        ]
-        msg = fetcher._format_event_message("Modena", date(2026, 6, 15), events)
-        italic_entities = [e for e in msg.entities if e.type == "italic"]
-        assert len(italic_entities) == 1
-        ie = italic_entities[0]
-        assert "Exa" in msg.text[ie.offset : ie.offset + ie.length]
-
-
 class TestAdminSendCustomMessageRichPath:
     def test_valid_rich_json_queues_with_entities(self, admin_test_env):
         admin_app, db = admin_test_env

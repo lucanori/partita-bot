@@ -710,8 +710,6 @@ class EventFetcher:
 
             builder.add("\n")
 
-        builder.add_italic("ℹ️ Bot powered by Exa")
-
         return builder.build(link_preview_options=LinkPreviewOptions(is_disabled=True))
 
     def classify_city(self, location: str) -> tuple[bool | None, str]:
