@@ -4,6 +4,7 @@ from typing import cast
 import pytest
 
 import run_bot
+from partita_bot.custom_bot import DeliveryResult
 from partita_bot.storage import Database
 
 
@@ -367,3 +368,209 @@ async def test_process_admin_operation_unknown_op():
         fake_bot, "UNKNOWN_OP", 42, cast(Database, db), is_legacy=True
     )
     assert db.marked == [42]
+
+
+class ResultBot:
+    def __init__(self, result):
+        self.result = result
+        self.calls: list[tuple[int, str, dict]] = []
+
+    def send_message_sync(self, chat_id: int, text: str, **kwargs):
+        self.calls.append((chat_id, text, kwargs))
+        return self.result
+
+
+class RaisingBot:
+    def __init__(self):
+        self.calls = 0
+
+    def send_message_sync(self, chat_id: int, text: str, **kwargs):
+        self.calls += 1
+        raise RuntimeError("boom")
+
+
+def test_process_queued_message_delivery_result_sent():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=55))
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is True
+    assert db.marked == [(1, 55)]
+    assert bot.calls[0][:2] == (5, "hola")
+
+
+def test_process_queued_message_permanent_result_terminalizes_row():
+    bot = ResultBot(DeliveryResult(DeliveryResult.PERMANENT, error="too long"))
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is True
+    assert db.marked == [(1, None)]
+    assert db.blocked == []
+
+
+def test_process_queued_message_transient_result_keeps_row_pending():
+    bot = ResultBot(DeliveryResult(DeliveryResult.TRANSIENT, error="timed out"))
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is False
+    assert db.marked == []
+    assert db.blocked == []
+
+
+def test_process_queued_message_blocked_result_marks_user():
+    bot = ResultBot(
+        DeliveryResult(DeliveryResult.BLOCKED, error="Forbidden: bot was blocked")
+    )
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=9, message="ciao", id=3)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is True
+    assert db.marked == [(3, None)]
+    assert db.blocked == [9]
+
+
+def test_process_queued_message_bool_stub_true_is_sent():
+    bot = ResultBot(True)
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is True
+    assert db.marked == [(1, None)]
+
+
+def test_process_queued_message_bool_stub_false_is_transient():
+    bot = ResultBot(False)
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    assert run_bot.process_queued_message(bot, cast(Database, db), message) is False
+    assert db.marked == []
+
+
+def test_process_queued_message_retry_after_adds_safety_delay():
+    bot = ResultBot(
+        DeliveryResult(DeliveryResult.TRANSIENT, error="flood", retry_after=15)
+    )
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    sleep_calls: list[float] = []
+    run_bot.process_queued_message(
+        bot, cast(Database, db), message, sleep_fn=sleep_calls.append
+    )
+    assert sleep_calls == [16.0]
+
+
+def test_process_queued_message_retry_after_zero_still_sleeps_one_second():
+    bot = ResultBot(
+        DeliveryResult(DeliveryResult.TRANSIENT, error="flood", retry_after=0)
+    )
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    sleep_calls: list[float] = []
+    run_bot.process_queued_message(
+        bot, cast(Database, db), message, sleep_fn=sleep_calls.append
+    )
+    assert sleep_calls == [1.0]
+
+
+def test_process_queued_message_successful_retry_after_sleeps_one_second():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=1, retry_after=None))
+    db = StubDB()
+    message = SimpleNamespace(telegram_id=5, message="hola", id=1)
+    sleep_calls: list[float] = []
+    run_bot.process_queued_message(
+        bot, cast(Database, db), message, sleep_fn=sleep_calls.append
+    )
+    assert sleep_calls == [1.0]
+
+
+def test_process_queued_message_malformed_entities_json_sends_plain_text():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=1))
+    db = StubDB()
+    message = SimpleNamespace(
+        telegram_id=5,
+        message="hola",
+        id=8,
+        parse_mode=None,
+        entities_json="{broken json",
+        link_preview_options_json=None,
+    )
+    run_bot.process_queued_message(bot, cast(Database, db), message)
+    assert bot.calls[0][0] == 5
+    assert bot.calls[0][1] == "hola"
+    assert bot.calls[0][2]["entities"] is None
+    assert bot.calls[0][2]["parse_mode"] is None
+    assert bot.calls[0][2]["link_preview_options"] is None
+    assert db.marked == [(8, 1)]
+
+
+def test_process_queued_message_malformed_link_preview_json_is_dropped():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=1))
+    db = StubDB()
+    message = SimpleNamespace(
+        telegram_id=5,
+        message="hola",
+        id=8,
+        parse_mode=None,
+        entities_json=None,
+        link_preview_options_json="{broken json",
+    )
+    run_bot.process_queued_message(bot, cast(Database, db), message)
+    assert bot.calls[0][2]["link_preview_options"] is None
+
+
+def test_process_queued_message_passes_long_text_to_delivery_layer_unchanged():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=1))
+    db = StubDB()
+    text = "x" * 7123
+    message = SimpleNamespace(
+        telegram_id=5,
+        message=text,
+        id=11,
+        parse_mode=None,
+        entities_json=None,
+        link_preview_options_json=None,
+    )
+    run_bot.process_queued_message(bot, cast(Database, db), message)
+    assert bot.calls[0][0] == 5
+    assert bot.calls[0][1] == text
+    assert len(bot.calls[0][1]) == 7123
+
+
+def test_process_message_batch_stops_after_transient_result():
+    bot = ResultBot(DeliveryResult(DeliveryResult.TRANSIENT, error="timed out"))
+    db = StubDB()
+    messages = [
+        SimpleNamespace(telegram_id=1, message="m1", id=1),
+        SimpleNamespace(telegram_id=2, message="m2", id=2),
+        SimpleNamespace(telegram_id=3, message="m3", id=3),
+    ]
+    sleep_calls: list[float] = []
+    run_bot.process_message_batch(bot, cast(Database, db), messages, sleep_fn=sleep_calls.append)
+    assert len(bot.calls) == 1
+    assert sleep_calls == [1.0]
+
+
+def test_process_message_batch_continues_after_terminal_results():
+    bot = ResultBot(DeliveryResult(DeliveryResult.SENT, message_id=5))
+    db = StubDB()
+    messages = [
+        SimpleNamespace(telegram_id=1, message="m1", id=1),
+        SimpleNamespace(telegram_id=2, message="m2", id=2),
+        SimpleNamespace(telegram_id=3, message="m3", id=3),
+    ]
+    run_bot.process_message_batch(bot, cast(Database, db), messages, sleep_fn=lambda s: None)
+    assert len(bot.calls) == 3
+
+    permanent_bot = ResultBot(DeliveryResult(DeliveryResult.PERMANENT, error="bad"))
+    run_bot.process_message_batch(
+        permanent_bot, cast(Database, db), messages, sleep_fn=lambda s: None
+    )
+    assert len(permanent_bot.calls) == 3
+
+
+def test_process_message_batch_stops_after_processing_exception():
+    bot = RaisingBot()
+    db = StubDB()
+    messages = [
+        SimpleNamespace(telegram_id=1, message="m1", id=1),
+        SimpleNamespace(telegram_id=2, message="m2", id=2),
+    ]
+    run_bot.process_message_batch(bot, cast(Database, db), messages, sleep_fn=lambda s: None)
+    assert bot.calls == 1

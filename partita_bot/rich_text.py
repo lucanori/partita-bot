@@ -1,10 +1,172 @@
 from __future__ import annotations
 
+import html
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from telegram import LinkPreviewOptions, MessageEntity
+
+logger = logging.getLogger(__name__)
+
+SUPPORTED_RICH_ENTITY_TYPES = frozenset(
+    {MessageEntity.BOLD, MessageEntity.ITALIC, MessageEntity.TEXT_LINK, MessageEntity.BLOCKQUOTE}
+)
+ALLOWED_URL_SCHEMES = frozenset({"http", "https", "tg"})
+MAX_RICH_NESTING_DEPTH = 4
+NON_NESTABLE_RICH_ENTITY_TYPES = frozenset({MessageEntity.TEXT_LINK, MessageEntity.BLOCKQUOTE})
+
+
+class _RichHtmlError(Exception):
+    pass
+
+
+@dataclass(slots=True)
+class _RichNode:
+    entity: MessageEntity
+    start: int
+    end: int
+    url: str | None
+    children: list["_RichNode"]
+
+
+def _build_utf16_index_map(text: str) -> list[int]:
+    mapping: list[int] = []
+    for index, char in enumerate(text):
+        mapping.append(index)
+        if ord(char) > 0xFFFF:
+            mapping.append(-1)
+    mapping.append(len(text))
+    return mapping
+
+
+def _resolve_utf16_offset(mapping: list[int], offset: int) -> int:
+    if offset < 0 or offset >= len(mapping):
+        raise _RichHtmlError("entity offset or range is out of bounds")
+    index = mapping[offset]
+    if index < 0:
+        raise _RichHtmlError("entity boundary splits a surrogate pair")
+    return index
+
+
+def _validate_text_link_url(url: Any) -> str:
+    if not isinstance(url, str) or not url:
+        raise _RichHtmlError("text_link entity has no url")
+    if any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url):
+        raise _RichHtmlError("text_link url contains unsafe characters")
+    if "\\" in url:
+        raise _RichHtmlError("text_link url contains a backslash")
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ALLOWED_URL_SCHEMES:
+        raise _RichHtmlError("text_link url scheme is not allowed")
+    if scheme in {"http", "https"}:
+        if not parsed.hostname:
+            raise _RichHtmlError("text_link http url has no host")
+        try:
+            port = parsed.port
+        except ValueError:
+            raise _RichHtmlError("text_link http url has an invalid port") from None
+        if port is not None and port <= 0:
+            raise _RichHtmlError("text_link http url has an invalid port")
+    if scheme == "tg" and not parsed.netloc:
+        raise _RichHtmlError("text_link tg url has no target")
+    return html.escape(url, quote=True)
+
+
+def _entity_opening_tag(entity: MessageEntity, url: str | None) -> str:
+    if entity.type == MessageEntity.BOLD:
+        return "<b>"
+    if entity.type == MessageEntity.ITALIC:
+        return "<i>"
+    if entity.type == MessageEntity.TEXT_LINK:
+        return f'<a href="{url}">'
+    return "<blockquote>"
+
+
+def _entity_closing_tag(entity: MessageEntity) -> str:
+    if entity.type == MessageEntity.BOLD:
+        return "</b>"
+    if entity.type == MessageEntity.ITALIC:
+        return "</i>"
+    if entity.type == MessageEntity.TEXT_LINK:
+        return "</a>"
+    return "</blockquote>"
+
+
+def _build_entity_forest(text: str, entities: list[Any]) -> list[_RichNode]:
+    mapping = _build_utf16_index_map(text)
+    spans: list[tuple[int, int, MessageEntity, str | None]] = []
+    for entity in entities:
+        if not isinstance(entity, MessageEntity):
+            raise _RichHtmlError("entity is not a MessageEntity")
+        if entity.type not in SUPPORTED_RICH_ENTITY_TYPES:
+            raise _RichHtmlError(f"unsupported entity type {entity.type}")
+        if not isinstance(entity.offset, int) or not isinstance(entity.length, int):
+            raise _RichHtmlError("entity offset or length is not an integer")
+        if entity.length <= 0:
+            raise _RichHtmlError("entity length is not positive")
+        start = _resolve_utf16_offset(mapping, entity.offset)
+        end = _resolve_utf16_offset(mapping, entity.offset + entity.length)
+        if end <= start:
+            raise _RichHtmlError("entity range is empty")
+        url = (
+            _validate_text_link_url(entity.url)
+            if entity.type == MessageEntity.TEXT_LINK
+            else None
+        )
+        spans.append((start, end, entity, url))
+
+    spans.sort(key=lambda span: (span[0], -span[1]))
+    forest: list[_RichNode] = []
+    stack: list[_RichNode] = []
+    for start, end, entity, url in spans:
+        node = _RichNode(entity=entity, start=start, end=end, url=url, children=[])
+        while stack and node.start >= stack[-1].end:
+            stack.pop()
+        if stack:
+            parent = stack[-1]
+            if node.end > parent.end:
+                raise _RichHtmlError("entities cross each other")
+            parent_type = parent.entity.type
+            if entity.type == MessageEntity.BLOCKQUOTE and parent_type != MessageEntity.BLOCKQUOTE:
+                raise _RichHtmlError("blockquote nested inside an inline entity")
+            ancestor_types = {ancestor.entity.type for ancestor in stack}
+            if entity.type in NON_NESTABLE_RICH_ENTITY_TYPES and entity.type in ancestor_types:
+                raise _RichHtmlError(f"{entity.type} entity nested inside a {entity.type} entity")
+            if len(stack) + 1 > MAX_RICH_NESTING_DEPTH:
+                raise _RichHtmlError("entity nesting is too deep")
+            parent.children.append(node)
+        else:
+            forest.append(node)
+        stack.append(node)
+    return forest
+
+
+def _emit_rich_html(text: str, nodes: list[_RichNode], start: int, end: int) -> str:
+    pieces: list[str] = []
+    cursor = start
+    for node in nodes:
+        pieces.append(html.escape(text[cursor : node.start]))
+        pieces.append(_entity_opening_tag(node.entity, node.url))
+        pieces.append(_emit_rich_html(text, node.children, node.start, node.end))
+        pieces.append(_entity_closing_tag(node.entity))
+        cursor = node.end
+    pieces.append(html.escape(text[cursor:end]))
+    return "".join(pieces)
+
+
+def build_rich_html(text: str, entities: list[MessageEntity] | None) -> str:
+    if not entities:
+        return html.escape(text)
+    try:
+        forest = _build_entity_forest(text, entities)
+    except Exception as exc:
+        logger.warning("Rich HTML serialization fell back to plain text: %s", exc)
+        return html.escape(text)
+    return _emit_rich_html(text, forest, 0, len(text))
 
 
 @dataclass(slots=True)

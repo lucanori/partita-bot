@@ -4,7 +4,7 @@ import os
 import sys
 import time
 from datetime import datetime
-from typing import Callable, cast
+from typing import Any, Callable, cast
 from zoneinfo import ZoneInfo
 
 import requests
@@ -21,6 +21,7 @@ from partita_bot.admin_operations import (
 )
 from partita_bot.bot import run_bot
 from partita_bot.bot_manager import get_bot
+from partita_bot.custom_bot import DeliveryResult
 from partita_bot.event_fetcher import FETCH_FAILURE, EventFetcher
 from partita_bot.notifications import process_notifications
 from partita_bot.scheduler import create_scheduler
@@ -241,13 +242,31 @@ async def process_admin_operation(
             db.mark_admin_operation_processed(operation_id)
 
 
+def _normalize_delivery_result(result: Any) -> DeliveryResult:
+    if isinstance(result, DeliveryResult):
+        return result
+    if isinstance(result, tuple) and len(result) >= 2:
+        success = bool(result[0])
+        error = result[1]
+        message_id = result[2] if len(result) > 2 else None
+    else:
+        success = bool(result)
+        error = None
+        message_id = None
+    if success:
+        return DeliveryResult(DeliveryResult.SENT, message_id=message_id)
+    if is_user_blocked_error(error):
+        return DeliveryResult(DeliveryResult.BLOCKED, error=error)
+    return DeliveryResult(DeliveryResult.TRANSIENT, error=error)
+
+
 def process_queued_message(
     bot_instance,
     db: Database,
     message,
     loop_factory: Callable[[], asyncio.AbstractEventLoop] = asyncio.new_event_loop,
     sleep_fn: Callable[[float], None] | None = None,
-) -> None:
+) -> bool:
     if message.telegram_id == 0 and message.message.startswith(ADMIN_OPERATION_PREFIX):
         admin_op = message.message.replace(ADMIN_OPERATION_PREFIX, "").strip()
         logger.info("Processing admin operation: %s", admin_op)
@@ -260,7 +279,7 @@ def process_queued_message(
             )
         finally:
             loop.close()
-        return
+        return True
 
     logger.info("Processing queued message %s for user %s", message.id, message.telegram_id)
 
@@ -273,39 +292,50 @@ def process_queued_message(
     if hasattr(message, "parse_mode") and message.parse_mode:
         parse_mode = str(message.parse_mode)
     if hasattr(message, "entities_json") and message.entities_json:
-        entities = deserialize_entities(str(message.entities_json))
+        try:
+            entities = deserialize_entities(str(message.entities_json))
+        except Exception as e:
+            logger.warning(
+                "Failed to deserialize entities for message %s, sending as plain text: %s",
+                message.id,
+                str(e),
+            )
+            entities = None
     if hasattr(message, "link_preview_options_json") and message.link_preview_options_json:
-        link_preview_options = deserialize_link_preview_options(
-            str(message.link_preview_options_json)
-        )
+        try:
+            link_preview_options = deserialize_link_preview_options(
+                str(message.link_preview_options_json)
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to deserialize link preview options for message %s: %s",
+                message.id,
+                str(e),
+            )
+            link_preview_options = None
 
     if entities:
         parse_mode = None
 
-    result = bot_instance.send_message_sync(
-        chat_id=message.telegram_id,
-        text=message.message,
-        parse_mode=parse_mode,
-        entities=entities,
-        link_preview_options=link_preview_options,
+    result = _normalize_delivery_result(
+        bot_instance.send_message_sync(
+            chat_id=message.telegram_id,
+            text=message.message,
+            parse_mode=parse_mode,
+            entities=entities,
+            link_preview_options=link_preview_options,
+        )
     )
-    if isinstance(result, tuple) and len(result) >= 2:
-        success = result[0]
-        error = result[1]
-        message_id = result[2] if len(result) > 2 else None
-    else:
-        success = bool(result)
-        error = None
-        message_id = None
-    if success:
-        db.mark_message_sent(message.id, sent_message_id=message_id)
+
+    if result.ok:
+        db.mark_message_sent(message.id, sent_message_id=result.message_id)
         logger.info(
             "Successfully sent message %s to user %s (msg_id: %s)",
             message.id,
             message.telegram_id,
-            message_id,
+            result.message_id,
         )
-    elif is_user_blocked_error(error):
+    elif result.blocked:
         logger.warning(
             "User %s blocked bot, flagging and marking message %s as sent",
             message.telegram_id,
@@ -313,15 +343,52 @@ def process_queued_message(
         )
         db.mark_user_blocked(message.telegram_id)
         db.mark_message_sent(message.id)
-    else:
+    elif result.is_retryable:
         logger.warning(
-            "Failed to send message %s to user %s",
+            "Transient failure sending message %s to user %s, will retry: %s",
             message.id,
             message.telegram_id,
+            result.error,
         )
+    else:
+        logger.error(
+            "Permanent failure sending message %s to user %s, abandoning send: %s",
+            message.id,
+            message.telegram_id,
+            result.error,
+        )
+        db.mark_message_sent(message.id)
 
     if sleep_fn is not None:
-        sleep_fn(1.0)
+        if result.retry_after is not None:
+            sleep_fn(max(result.retry_after + 1.0, 1.0))
+        else:
+            sleep_fn(1.0)
+
+    return not result.is_retryable
+
+
+def process_message_batch(
+    bot_instance,
+    db: Database,
+    messages: list,
+    sleep_fn: Callable[[float], None] | None = None,
+) -> None:
+    for message in messages:
+        try:
+            if not process_queued_message(bot_instance, db, message, sleep_fn=sleep_fn):
+                logger.info(
+                    "Stopping queue batch at message %s after transient failure", message.id
+                )
+                break
+        except Exception as e:
+            logger.error(
+                "Unexpected error processing message %s, stopping batch to preserve "
+                "queue order: %s",
+                message.id,
+                str(e),
+            )
+            break
 
 
 def check_telegram_token_in_use(token):
@@ -369,9 +436,8 @@ if __name__ == "__main__":
     bot_instance = get_bot(cast(str, token))
 
     startup_db = Database()
-    deleted_count = startup_db.delete_pending_messages_older_than(hours=24)
-    if deleted_count > 0:
-        logger.info(f"Purged {deleted_count} old pending messages on startup")
+    pending_count = startup_db.count_pending_messages()
+    logger.info("Pending messages at startup: %s", pending_count)
     startup_db.close()
 
     logger.info("Starting scheduler")
@@ -425,11 +491,7 @@ if __name__ == "__main__":
         while True:
             try:
                 messages = db.get_pending_messages(limit=10)
-                for message in messages:
-                    try:
-                        process_queued_message(bot_instance, db, message, sleep_fn=time.sleep)
-                    except Exception as e:
-                        logger.error(f"Error processing message {message.id}: {str(e)}")
+                process_message_batch(bot_instance, db, messages, sleep_fn=time.sleep)
 
                 if not messages:
                     time.sleep(1)

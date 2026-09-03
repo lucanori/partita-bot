@@ -1,4 +1,6 @@
+import html
 import json
+import logging
 from base64 import b64encode
 from datetime import date
 
@@ -8,9 +10,11 @@ from telegram import LinkPreviewOptions, MessageEntity
 import partita_bot.config as config
 from partita_bot.event_fetcher import EventFetcher
 from partita_bot.rich_text import (
+    MAX_RICH_NESTING_DEPTH,
     RichMessage,
     RichMessageBuilder,
     RichMessageStorage,
+    build_rich_html,
     deserialize_entities,
     deserialize_link_preview_options,
     rich_message_from_queue_row,
@@ -23,6 +27,282 @@ def _auth_header() -> dict[str, str]:
         f"{config.ADMIN_USERNAME}:{config.ADMIN_PASSWORD}".encode()
     ).decode()
     return {"Authorization": f"Basic {token}"}
+
+
+class TestBuildRichHtml:
+    def test_plain_text_without_entities_is_escaped(self):
+        assert build_rich_html("a < b & c > d", None) == "a &lt; b &amp; c &gt; d"
+
+    def test_plain_long_text_passes_through_unchanged(self):
+        text = "x" * 7123
+        assert build_rich_html(text, None) == text
+
+    def test_plain_long_text_with_markup_is_escaped(self):
+        text = "<script>alert(1)</script>" * 400
+        result = build_rich_html(text, None)
+        assert result == html.escape(text)
+        assert "<script>" not in result
+
+    def test_empty_entities_list_behaves_like_none(self):
+        text = "plain & simple"
+        assert build_rich_html(text, []) == html.escape(text)
+
+    def test_supported_entities_emit_expected_tags(self):
+        text = "bold and link here"
+        entities = [
+            MessageEntity("bold", 0, 4),
+            MessageEntity("text_link", 9, 4, url="https://example.com"),
+            MessageEntity("blockquote", 14, 4),
+        ]
+        assert build_rich_html(text, entities) == (
+            '<b>bold</b> and <a href="https://example.com">link</a> '
+            "<blockquote>here</blockquote>"
+        )
+
+    def test_italic_entity(self):
+        text = "hello world"
+        entities = [MessageEntity("italic", 6, 5)]
+        assert build_rich_html(text, entities) == "hello <i>world</i>"
+
+    def test_bold_inside_blockquote_is_allowed(self):
+        text = "quote bold end"
+        entities = [MessageEntity("blockquote", 0, 14), MessageEntity("bold", 6, 4)]
+        assert build_rich_html(text, entities) == (
+            "<blockquote>quote <b>bold</b> end</blockquote>"
+        )
+
+    def test_italic_inside_blockquote_is_allowed(self):
+        text = "quote emphasis end"
+        entities = [MessageEntity("blockquote", 0, 18), MessageEntity("italic", 6, 8)]
+        assert build_rich_html(text, entities) == (
+            "<blockquote>quote <i>emphasis</i> end</blockquote>"
+        )
+
+    def test_text_link_inside_blockquote_is_allowed(self):
+        text = "quote source link"
+        entities = [
+            MessageEntity("blockquote", 0, 17),
+            MessageEntity("text_link", 13, 4, url="https://example.com"),
+        ]
+        assert build_rich_html(text, entities) == (
+            '<blockquote>quote source <a href="https://example.com">link</a></blockquote>'
+        )
+
+    def test_text_link_inside_text_link_falls_back_to_plain(self):
+        text = "click here now"
+        entities = [
+            MessageEntity("text_link", 0, 14, url="https://example.com"),
+            MessageEntity("text_link", 6, 4, url="https://example.org"),
+        ]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_text_link_deeply_nested_behind_inline_entity_falls_back_to_plain(self):
+        text = "click here now"
+        entities = [
+            MessageEntity("text_link", 0, 14, url="https://example.com"),
+            MessageEntity("bold", 0, 14),
+            MessageEntity("text_link", 6, 4, url="https://example.org"),
+        ]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_blockquote_inside_blockquote_falls_back_to_plain(self):
+        text = "outer quote"
+        entities = [
+            MessageEntity("blockquote", 0, 11),
+            MessageEntity("blockquote", 6, 5),
+        ]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_bold_inside_italic_is_allowed(self):
+        text = "abcdef"
+        entities = [MessageEntity("italic", 0, 6), MessageEntity("bold", 1, 3)]
+        assert build_rich_html(text, entities) == "<i>a<b>bcd</b>ef</i>"
+
+    def test_adjacent_entities_do_not_cross(self):
+        text = "abcdef"
+        entities = [MessageEntity("bold", 0, 3), MessageEntity("italic", 3, 3)]
+        assert build_rich_html(text, entities) == "<b>abc</b><i>def</i>"
+
+    def test_astral_emoji_prefix_uses_utf16_offsets(self):
+        text = "\U0001f3af bold"
+        entities = [MessageEntity("bold", 3, 4)]
+        assert build_rich_html(text, entities) == "\U0001f3af <b>bold</b>"
+
+    def test_bold_span_over_emoji_and_text(self):
+        text = "a\U0001f600b"
+        entities = [MessageEntity("bold", 0, 4)]
+        assert build_rich_html(text, entities) == "<b>a\U0001f600b</b>"
+
+    def test_bold_ending_inside_emoji_falls_back_to_plain(self):
+        text = "a\U0001f600b"
+        entities = [MessageEntity("bold", 0, 2)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_bold_starting_inside_emoji_falls_back_to_plain(self):
+        text = "a\U0001f600b"
+        entities = [MessageEntity("bold", 2, 2)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_offset_out_of_range_falls_back_to_plain(self):
+        text = "hello"
+        entities = [MessageEntity("bold", 3, 10)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_zero_length_entity_falls_back_to_plain(self):
+        text = "hello"
+        entities = [MessageEntity("bold", 0, 0)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_unsupported_entity_type_falls_back_to_plain(self):
+        text = "hello"
+        entities = [MessageEntity("code", 0, 3)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_crossing_entities_fall_back_to_plain(self):
+        text = "abcdefgh"
+        entities = [MessageEntity("bold", 0, 5), MessageEntity("italic", 3, 5)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_blockquote_inside_bold_falls_back_to_plain(self):
+        text = "inline block"
+        entities = [MessageEntity("bold", 0, 12), MessageEntity("blockquote", 0, 12)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_nesting_deeper_than_limit_falls_back_to_plain(self):
+        text = "deep"
+        entities = [MessageEntity("italic", 0, 4)]
+        for _ in range(MAX_RICH_NESTING_DEPTH - 1):
+            entities.append(MessageEntity("bold", 0, 4))
+        assert build_rich_html(text, entities) != html.escape(text)
+        entities.append(MessageEntity("bold", 0, 4))
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_text_link_without_url_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5)]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_javascript_url_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="javascript:alert(1)")]
+        result = build_rich_html(text, entities)
+        assert result == html.escape(text)
+        assert "javascript" not in result
+
+    def test_data_url_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="data:text/html,evil")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_control_characters_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com/a\nb")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_whitespace_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com/a b")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_http_url_without_host_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_credentials_only_host_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://@")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_port_but_no_host_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://:8080")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_non_numeric_port_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com:abc")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_out_of_range_port_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com:99999")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_negative_port_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com:-1")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_zero_port_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com:0")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_backslash_in_host_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com\\evil")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_url_with_backslash_in_path_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="https://example.com/a\\b")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_empty_tg_url_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="tg://")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_tg_url_with_only_query_falls_back_to_plain(self):
+        text = "click"
+        entities = [MessageEntity("text_link", 0, 5, url="tg://?x=1")]
+        assert build_rich_html(text, entities) == html.escape(text)
+
+    def test_malformed_url_fallback_does_not_log_the_url(self, caplog):
+        text = "click"
+        url = "https://example.com:99999"
+        entities = [MessageEntity("text_link", 0, 5, url=url)]
+        with caplog.at_level(logging.WARNING):
+            build_rich_html(text, entities)
+        assert url not in caplog.text
+        assert text not in caplog.text
+
+    def test_url_attribute_is_escaped(self):
+        text = "click"
+        url = 'https://example.com/?a=1&b=2"onmouseover="alert(1)'
+        entities = [MessageEntity("text_link", 0, 5, url=url)]
+        assert build_rich_html(text, entities) == (
+            '<a href="https://example.com/?a=1&amp;b=2&quot;onmouseover=&quot;alert(1)">click</a>'
+        )
+
+    def test_tg_scheme_url_is_allowed(self):
+        text = "join here"
+        entities = [MessageEntity("text_link", 0, 4, url="tg://resolve?domain=example")]
+        assert build_rich_html(text, entities) == (
+            '<a href="tg://resolve?domain=example">join</a> here'
+        )
+
+    def test_text_content_is_escaped_inside_entities(self):
+        text = "<b> & </b>"
+        entities = [MessageEntity("bold", 0, 10)]
+        assert build_rich_html(text, entities) == "<b>&lt;b&gt; &amp; &lt;/b&gt;</b>"
+
+    def test_fallback_preserves_exact_text_atomically(self):
+        text = 'Tom & Jerry <3 "quotes" \U0001f600 end'
+        entities = [MessageEntity("bold", 0, 5), MessageEntity("italic", 10, 300)]
+        result = build_rich_html(text, entities)
+        assert result == html.escape(text)
+        assert html.unescape(result) == text
+
+    def test_fallback_logs_neither_message_text_nor_urls(self, caplog):
+        text = "secret message body"
+        url = "https://secret.example.com/private"
+        entities = [MessageEntity("bold", 0, 50), MessageEntity("text_link", 0, 6, url=url)]
+        with caplog.at_level(logging.WARNING):
+            build_rich_html(text, entities)
+        assert "secret" not in caplog.text
+        assert url not in caplog.text
 
 
 class TestRichMessageFromJson:

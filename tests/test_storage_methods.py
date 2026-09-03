@@ -98,6 +98,58 @@ def test_queue_message_lifecycle(db):
     assert not db.get_pending_messages()
 
 
+def test_get_pending_messages_orders_by_created_at_then_id(db):
+    db.queue_message(1, "older row")
+    db.queue_message(2, "newer row")
+    rows = db.get_pending_messages(limit=10)
+    base = datetime.now(tz=ZoneInfo("UTC"))
+    rows[0].created_at = base
+    rows[1].created_at = base - timedelta(hours=1)
+    db.session.commit()
+
+    ordered = db.get_pending_messages(limit=10)
+    assert [m.message for m in ordered] == ["newer row", "older row"]
+
+
+def test_get_pending_messages_ties_break_by_id(db):
+    db.queue_message(1, "first")
+    db.queue_message(2, "second")
+    rows = db.get_pending_messages(limit=10)
+    stamp = datetime.now(tz=ZoneInfo("UTC"))
+    for row in rows:
+        row.created_at = stamp
+    db.session.commit()
+
+    ordered = db.get_pending_messages(limit=10)
+    assert [m.id for m in ordered] == sorted(m.id for m in ordered)
+    assert ordered[0].message == "first"
+
+
+def test_count_pending_messages(db):
+    db.queue_message(1, "a")
+    db.queue_message(2, "b")
+    db.queue_message(3, "c")
+    assert db.count_pending_messages() == 3
+    row = db.get_pending_messages(limit=1)[0]
+    db.mark_message_sent(row.id)
+    assert db.count_pending_messages() == 2
+
+
+def test_old_pending_rows_are_retained_and_kept_deterministic(db):
+    db.queue_message(2, "kept old row")
+    db.queue_message(1, "kept older row")
+    rows = db.get_pending_messages(limit=10)
+    old = datetime.now(tz=ZoneInfo("UTC")) - timedelta(days=5)
+    rows[0].created_at = old
+    rows[1].created_at = old - timedelta(days=1)
+    db.session.commit()
+
+    assert db.count_pending_messages() == 2
+    ordered = db.get_pending_messages(limit=10)
+    assert [m.message for m in ordered] == ["kept older row", "kept old row"]
+    assert all(m.sent is False for m in ordered)
+
+
 def _run_async(coro):
     loop = asyncio.new_event_loop()
     try:

@@ -742,9 +742,19 @@ class Database:
         return (
             self.session.query(MessageQueue)
             .filter(MessageQueue.sent.is_(False))
-            .order_by(MessageQueue.created_at)
+            .order_by(MessageQueue.created_at, MessageQueue.id)
             .limit(limit)
             .all()
+        )
+
+    def count_pending_messages(self) -> int:
+        from sqlalchemy import func
+
+        return int(
+            self.session.query(func.count(MessageQueue.id))
+            .filter(MessageQueue.sent.is_(False))
+            .scalar()
+            or 0
         )
 
     def mark_message_sent(self, message_id: int, sent_message_id: int | None = None) -> bool:
