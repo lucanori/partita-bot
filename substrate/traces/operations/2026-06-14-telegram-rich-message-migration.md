@@ -1,6 +1,7 @@
 ---
 status: completed
 created_at: 2026-06-14
+updated_at: 2026-09-03
 files_edited:
   - .github/CONTRIBUTING.md
   - README.md
@@ -18,19 +19,24 @@ files_edited:
   - templates/admin.html
   - tests/conftest.py
   - tests/test_bot_handlers.py
+  - tests/test_custom_bot.py
   - tests/test_event_fetcher.py
   - tests/test_notifications_multicity.py
   - tests/test_resiliency.py
   - tests/test_rich_text.py
   - tests/test_run_bot_helpers.py
   - tests/test_scheduler.py
+  - tests/test_storage_methods.py
   - tests/test_scheduler_module.py
-rationale: Migrate the bot to current Telegram rich-text capabilities so notifications and queued messages can carry entities, parse modes, and link preview options while remaining backward compatible with legacy plain-text rows.
+rationale: Migrate the bot to current Telegram rich-text capabilities so notifications and queued messages can carry entities, parse modes, and link preview options, then extend delivery to one rich message for text up to 32,768 characters while remaining backward compatible with legacy rows.
 supporting_docs:
   - https://core.telegram.org/bots/api#rich-messages
+  - https://core.telegram.org/bots/api#sendrichmessage
+  - https://core.telegram.org/bots/api#inputrichmessage
   - https://core.telegram.org/bots/api#messageentity
   - https://core.telegram.org/bots/api#formatting-options
   - https://docs.python-telegram-bot.org/en/stable/index.html
+  - https://docs.python-telegram-bot.org/en/v22.8/telegram.bot.html#telegram.Bot.do_api_request
   - https://pypi.org/project/python-telegram-bot/
 ---
 
@@ -62,3 +68,35 @@ Added a rich-text delivery layer for Telegram messages, upgraded `python-telegra
 - Ran `docker compose -f docker-compose.local.yml logs --tail 200`.
 - Ran `docker compose -f docker-compose.local.yml down`.
 - Ran a `security-review-specialist` review over all session-modified files; no meaningful vulnerabilities were reported and no review file was written under `substrate/traces/reviews/`.
+
+## Update on 2026-09-03
+
+### Summary of changes
+
+Messages of 4,097 through 32,768 Unicode code points now use Telegram Bot API `sendRichMessage` as one message. Short messages keep the existing `sendMessage` path, and the queue no longer deletes old pending rows during startup.
+
+### Technical reasoning
+
+- Telegram still limits `sendMessage` to 4,096 characters. The 32,768-character limit belongs to the newer `sendRichMessage` method, so raising a local constant on the old method would not fix delivery.
+- `python-telegram-bot` 22.8 does not expose a typed rich-message method. The sender uses its supported `do_api_request` escape hatch without changing dependencies.
+- The long-message path converts persisted UTF-16 entity ranges to escaped Rich HTML. It supports bold, italic, text links, and blockquotes. Invalid, crossing, nested non-formatting, or unsupported entities fall back atomically to escaped plain text.
+- The sender never splits or truncates content. Text over 32,768 code points fails locally without a Telegram call.
+- Telegram `BadRequest` responses and local permanent failures terminalize the queue row. Rate limits, timeouts, network errors, and unexpected failures remain retryable.
+- Removing the startup purge lets legacy pending rows reach the new transport after deployment. Pending rows are ordered by creation time and ID, and a retryable failure stops the current batch to preserve order.
+
+### Impact assessment
+
+- The five reported production rows between 4,160 and 7,123 characters can be retried by the worker and sent through `sendRichMessage` without a database migration or manual rewrite.
+- Short messages retain their entities, parse mode, message ID handling, and link-preview settings. Telegram does not expose `link_preview_options` on `sendRichMessage`, so long messages cannot use that option.
+- Permanent delivery failures no longer remain in the active retry loop. The existing schema records them as processed with no Telegram message ID.
+- A live Telegram canary was not possible without a designated test chat. Production rendering and the raw endpoint response remain deployment checks.
+
+### Validation steps
+
+- Reviewed the cumulative diff from `27302a47324eee33f241bdac2e0901ff1fa8b0b1` to `ceb92a6` and read every changed production file.
+- Ran `ruff check .`; it passed.
+- Ran `pytest --cov=. --cov-report=term`; all 348 tests passed with 90% total coverage. The two main changed modules each reached 95% coverage.
+- Ran `docker bake`; it passed.
+- Built and started the local Compose stack with explicit fake credentials, inspected 200 log lines, and shut it down. The admin service started normally. The bot reached database and worker startup, then Telegram rejected the intentionally fake token.
+- Ran the hybrid quality gate; it passed.
+- Ran a focused security review over Rich HTML conversion, URL handling, raw API payload construction, logging, and queue behavior; the verdict was clear with no blocking finding.
