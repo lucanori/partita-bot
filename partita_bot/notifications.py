@@ -53,19 +53,21 @@ def process_notifications(
     summary = {"notifications_sent": 0, "no_events": 0, "already_notified": 0, "fetch_errors": 0}
     city_groups = group_users_by_cities(users, db)
     local_date = local_time.date()
-    notified_users_today: set[int] = set()
+    already_notified_users = {
+        user.telegram_id for user in users if _was_notified_today(user, local_date)
+    }
+    counted_notified_users: set[int] = set()
+    marked_users: set[int] = set()
 
     for normalized_city, user_city_pairs in city_groups.items():
         city_label = normalized_city.title() or "la tua città"
         message = fetcher.fetch_event_message(city_label, local_date)
 
         for user, _ in user_city_pairs:
-            if user.telegram_id in notified_users_today:
-                continue
-
-            if _was_notified_today(user, local_date):
-                summary["already_notified"] += 1
-                notified_users_today.add(user.telegram_id)
+            if user.telegram_id in already_notified_users:
+                if user.telegram_id not in counted_notified_users:
+                    summary["already_notified"] += 1
+                    counted_notified_users.add(user.telegram_id)
                 continue
 
             if message == FETCH_FAILURE:
@@ -80,8 +82,9 @@ def process_notifications(
                 LOGGER.error("Failed to queue event notification for %s", user.telegram_id)
                 continue
 
-            db.update_last_notification(user.telegram_id, is_manual=mark_manual)
             summary["notifications_sent"] += 1
-            notified_users_today.add(user.telegram_id)
+            if user.telegram_id not in marked_users:
+                db.update_last_notification(user.telegram_id, is_manual=mark_manual)
+                marked_users.add(user.telegram_id)
 
     return summary

@@ -37,3 +37,4 @@ venv/
 /data
 thoughts/shared/status/
 tmp/
+substrate/traces/status/

@@ -16,6 +16,7 @@ Partita Bot is a Telegram bot that keeps Italians informed about the next footba
 ## Project Structure
 
 ```text
+├── .dockerignore            # Build-context exclusions for credentials, data, and caches
 ├── .env.example             # Sample environment variables file
 ├── .gitignore
 ├── Dockerfile               # Docker container build instructions
@@ -39,6 +40,8 @@ Partita Bot is a Telegram bot that keeps Italians informed about the next footba
 │   └── admin.html           # Admin dashboard layout
 ├── static/                  # Static assets served by the admin interface
 │   └── favicon.ico
+├── scripts/                 # Repository verification tooling
+│   └── verify_container.py  # Container build, runtime smoke, loopback probe, and teardown verifier
 ├── tests/                   # pytest suite covering package modules and entrypoints
 ├── pyproject.toml           # Build, lint, and test configuration (primary toolchain)
 └── requirements.txt         # Pin-compatible dependency bundle for pip installs
@@ -77,7 +80,8 @@ Core modules now live inside `partita_bot/`, but the root entrypoints `run_bot.p
 
 - **Linting:** `ruff check .` enforces style, type hints, and formatting rules centralized in `pyproject.toml`.
 - **Tests:** `pytest --cov=. --cov-report=term` runs the unit suite with coverage reporting (new tests cover config, storage cache, event fetcher, scheduler grouping, and admin notify flows).
-- Both commands use the same dependency definitions declared in `pyproject.toml`, so installing with `uv install` or `pip install .[dev]` keeps tooling aligned.
+- **Container verification:** `python -m scripts.verify_container --runtime podman` builds the production image and verifies the entrypoint bot branch through the offline cached worker path plus the admin service; pass `--runtime docker` when Docker is the available runtime. It requires a working rootless Podman or Docker installation. It does not run `run_bot.py` as `__main__` or exercise the live scheduler/polling loop.
+- `ruff` and `pytest` install from the dev dependencies declared in `pyproject.toml` (`uv install` or `pip install .[dev]`); the container verifier additionally needs a working rootless Podman or Docker installation.
 
 ## Running the Bot
 

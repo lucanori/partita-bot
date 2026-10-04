@@ -4,6 +4,7 @@
 
 ```text
 partita-bot/
+├── .dockerignore            # Build-context exclusions for credentials, data, and caches
 ├── .env.example             # Sample environment variables file
 ├── .gitignore
 ├── Dockerfile               # Docker build instructions
@@ -27,6 +28,8 @@ partita-bot/
 │   └── admin.html           # Admin dashboard layout
 ├── static/                  # Static assets served by Flask
 │   └── favicon.ico
+├── scripts/                 # Repository verification tooling
+│   └── verify_container.py  # Container build, runtime smoke, loopback probe, and teardown verifier
 ├── tests/                   # pytest suite covering the package and entrypoints
 ├── pyproject.toml           # Build, lint, and test configuration (primary tooling)
 └── requirements.txt         # Pin-compatible dependency bundle for pip installs
@@ -36,7 +39,7 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 
 ## Contribution Workflow
 
-1. After any code change you must run `ruff check .`, `pytest --cov=. --cov-report=term`, `docker bake`, `docker compose -f docker-compose.local.yml up -d --build`, `docker compose -f docker-compose.local.yml logs --tail 200` and if you find no errors, you can stop the local environment with `docker compose -f docker-compose.local.yml down`.
+1. After any code change you must run `ruff check .`, `pytest --cov=. --cov-report=term`, and the container verifier `python -m scripts.verify_container --runtime podman` (pass `--runtime docker` when Docker is the available runtime). The verifier builds the production `Dockerfile` into a uniquely named temporary image, starts the real `/app/entrypoint.sh` bot and admin branches, inspects logs, and removes only its own containers and image. It checks the offline cached worker path and the real Gunicorn admin service over loopback; it does not run `run_bot.py` as `__main__` and does not exercise the live scheduler or polling loop. The local compose stack can load real API credentials and bind the real `./data` directory, so it is not a hermetic gate and remains development and deployment configuration.
 2. Structural changes (packages, module paths, service entrypoints, etc.) must be reflected in documentation (`README.md` and `CONTRIBUTING.md`) so engineers and AI agents can follow the new layout.
 3. never write any comments in the code. we have a strict no-comment policy.
 4. Admin operations always use the dedicated `admin_queue` table. The admin service (Flask) only needs database access and does not require Telegram or Exa API credentials; the backend service handles all external API calls.
@@ -145,5 +148,5 @@ Core modules now live inside `partita_bot/`, while `run_bot.py` and `wsgi.py` re
 ### Requirements
 
 - Python 3.10+
-- Docker and Docker Compose
+- Docker or rootless Podman, plus Docker Compose (or `podman compose`) for the local compose workflow
 - Recommended dependency management through `pyproject.toml` (install with `uv install --dev` or fall back to `pip install -r requirements.txt`)

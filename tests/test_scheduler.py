@@ -66,6 +66,30 @@ def test_process_notifications_skips_already_notified():
     assert summary["no_events"] == 0
 
 
+def test_process_notifications_skips_already_notified_with_aware_timestamp():
+    with Database(database_url="sqlite:///:memory:") as db:
+        db.add_user(1, "alice", "Roma")
+        db.set_user_cities(1, ["roma"])
+
+        users = db.get_all_users()
+        users[0].last_notification = datetime(2026, 3, 2, 7, 0, tzinfo=ZoneInfo("Europe/Rome"))
+
+        fetcher = DummyFetcher()
+        local_time = datetime(2026, 3, 2, 8, tzinfo=ZoneInfo("Europe/Rome"))
+
+        summary = process_notifications(
+            users=users,
+            db=db,
+            fetcher=fetcher,
+            queue_message=db.queue_rich_message,
+            local_time=local_time,
+        )
+
+        assert summary["already_notified"] == 1
+        assert summary["notifications_sent"] == 0
+        assert db.get_pending_messages() == []
+
+
 def test_process_notifications_skips_blocked_users():
     with Database(database_url="sqlite:///:memory:") as db:
         db.add_user(1, "alice", "Roma")
@@ -135,7 +159,7 @@ def test_process_notifications_skips_access_blocked_users():
         assert queued[0].telegram_id == 2
 
 
-def test_process_notifications_notifies_once_per_user_multiple_cities():
+def test_process_notifications_sends_one_message_per_eventful_city():
     with Database(database_url="sqlite:///:memory:") as db:
         db.add_user(1, "alice", "Roma")
         db.set_user_cities(1, ["roma", "milano"])
@@ -151,10 +175,14 @@ def test_process_notifications_notifies_once_per_user_multiple_cities():
             local_time=local_time,
         )
 
-        assert summary["notifications_sent"] == 1
-        assert len(fetcher.calls) == 2
+        assert summary["notifications_sent"] == 2
+        assert fetcher.calls == ["Roma", "Milano"]
         queued = db.get_pending_messages()
-        assert len(queued) == 1
+        assert len(queued) == 2
+        assert [row.message for row in queued] == [
+            "Evento per Roma",
+            "Evento per Milano",
+        ]
 
 
 def test_calculate_next_run_before_window_schedules_today():
